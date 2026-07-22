@@ -53,6 +53,7 @@ export const leagues = mysqlTable("leagues", {
   nameEn: varchar("nameEn", { length: 100 }),
   country: varchar("country", { length: 50 }),
   logoUrl: varchar("logoUrl", { length: 500 }),
+  externalLeagueId: varchar("externalLeagueId", { length: 50 }), // API-Sports.io의 리그 ID (예: EPL=39). 이게 있어야 자동 동기화 가능
   tier: mysqlEnum("tier", ["major", "minor"]).default("minor").notNull(), // major=빅리그(픽10개, 킥오프전 선제생성) / minor=비인기(픽4개, 클릭시 생성)
   sortOrder: int("sortOrder").default(0).notNull(),
   isActive: boolean("isActive").default(true).notNull(),

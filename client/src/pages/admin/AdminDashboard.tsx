@@ -1,10 +1,16 @@
 import { trpc } from "@/lib/trpc";
-import { Shield, Trophy, FileText, Swords, ArrowRight } from "lucide-react";
+import { toast } from "sonner";
+import { Shield, Trophy, FileText, Swords, ArrowRight, Database } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 
 export default function AdminDashboard() {
+  const utils = trpc.useUtils();
   const { data: stats } = trpc.admin.stats.useQuery();
+  const seedData = trpc.admin.seedData.useMutation({
+    onSuccess: () => { toast.success("초기 데이터 시딩 완료! (종목·리그·분석가 20명)"); utils.admin.stats.invalidate(); },
+    onError: (e) => toast.error(e.message),
+  });
 
   const statCards = [
     { icon: Shield, label: "관리자 계정", value: stats?.totalAdmins ?? 0, color: "text-blue-400", bg: "bg-blue-500/10" },
@@ -22,9 +28,17 @@ export default function AdminDashboard() {
 
   return (
     <div className="p-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-foreground">대시보드</h1>
-        <p className="text-muted-foreground mt-1">분석왕 운영 현황을 확인하세요.</p>
+      <div className="mb-8 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">대시보드</h1>
+          <p className="text-muted-foreground mt-1">분석왕 운영 현황을 확인하세요.</p>
+        </div>
+        {(stats?.totalBots ?? 0) === 0 && (
+          <Button onClick={() => seedData.mutate()} disabled={seedData.isPending} className="gold-gradient text-black font-bold">
+            <Database className="w-4 h-4 mr-2" />
+            {seedData.isPending ? "생성 중..." : "초기 데이터 시딩 (종목·분석가 20명)"}
+          </Button>
+        )}
       </div>
 
       {/* Stats */}

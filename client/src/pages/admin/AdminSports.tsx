@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Plus } from "lucide-react";
+import { Plus, Wifi, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 export default function AdminSports() {
@@ -18,12 +18,25 @@ export default function AdminSports() {
     onSuccess: () => { toast.success("리그 추가 완료"); utils.sport.allLeagues.invalidate(); setLeagueDialog(false); },
     onError: (e) => toast.error(e.message),
   });
+  const testConnection = trpc.sport.testApiSportsConnection.useMutation({
+    onSuccess: (r) => (r.ok ? toast.success(r.message) : toast.error(r.message)),
+    onError: (e) => toast.error(e.message),
+  });
+  const syncFixtures = trpc.sport.syncFootballFixtures.useMutation({
+    onSuccess: (r) => toast.success(`동기화 완료 — 신규 ${r.created}건, 기존 ${r.skipped}건 (총 ${r.total}건 조회)`),
+    onError: (e) => toast.error(e.message),
+  });
 
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-black">종목 · 리그 관리</h1>
-        <Button size="sm" onClick={() => setLeagueDialog(true)}><Plus className="w-4 h-4 mr-1" />리그 추가</Button>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={() => testConnection.mutate()} disabled={testConnection.isPending}>
+            <Wifi className="w-4 h-4 mr-1" />API 연결 테스트
+          </Button>
+          <Button size="sm" onClick={() => setLeagueDialog(true)}><Plus className="w-4 h-4 mr-1" />리그 추가</Button>
+        </div>
       </div>
 
       <h2 className="font-bold mb-2 text-sm text-muted-foreground">종목 ({sports?.length ?? 0})</h2>
@@ -37,11 +50,19 @@ export default function AdminSports() {
       </div>
 
       <h2 className="font-bold mb-2 text-sm text-muted-foreground">리그 ({leagues?.length ?? 0}) — tier: major=빅리그(픽10개) / minor=비인기(픽4개)</h2>
+      <p className="text-xs text-muted-foreground mb-3">"API-Sports 리그ID"가 입력된 축구 리그만 동기화 버튼이 활성화됩니다 (예: EPL=39). API-Football 사이트에서 리그별 ID를 확인해 입력하세요.</p>
       <div className="space-y-2">
         {(leagues ?? []).map((l: any) => (
           <div key={l.id} className="p-3 rounded-lg bg-card border border-border flex justify-between items-center text-sm">
-            <span>{l.name} <span className="text-xs text-muted-foreground">({l.country})</span></span>
-            <span className={`text-xs px-2 py-0.5 rounded-full ${l.tier === "major" ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground"}`}>{l.tier}</span>
+            <span>{l.name} <span className="text-xs text-muted-foreground">({l.country}) {l.externalLeagueId ? `· API ID: ${l.externalLeagueId}` : ""}</span></span>
+            <div className="flex items-center gap-2">
+              <span className={`text-xs px-2 py-0.5 rounded-full ${l.tier === "major" ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground"}`}>{l.tier}</span>
+              {l.externalLeagueId && (
+                <Button size="sm" variant="ghost" onClick={() => syncFixtures.mutate({ leagueId: l.id })} disabled={syncFixtures.isPending}>
+                  <RefreshCw className="w-3.5 h-3.5 mr-1" />경기 동기화
+                </Button>
+              )}
+            </div>
           </div>
         ))}
       </div>
@@ -63,6 +84,7 @@ export default function AdminSports() {
               </SelectContent>
             </Select>
             <Input placeholder="국가" onChange={(e) => setForm({ ...form, country: e.target.value })} />
+            <Input placeholder="API-Sports 리그ID (축구만, 선택사항 — 예: 39)" onChange={(e) => setForm({ ...form, externalLeagueId: e.target.value })} />
           </div>
           <Button className="w-full mt-3" onClick={() => createLeague.mutate(form)}>추가</Button>
         </DialogContent>
@@ -70,3 +92,4 @@ export default function AdminSports() {
     </div>
   );
 }
+

@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import bcrypt from "bcryptjs";
 import { InsertUser, users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory, pitcherStartHistory, playerAppearanceLog } from "../drizzle/schema";
 import { ENV } from './_core/env';
+import { fetchUpcomingFixtures } from './_core/apiSports';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -339,7 +340,43 @@ export async function getBotStatsByCategory(botId: number) {
 // 2026 삭제됨: getUserAnalysisList (유저 분석글 작성 폐지 — 4절 참고, matchAnalysis(AI 분석가 전용)로 대체)
 
 // ─── Events (월간 이벤트) ────────────────────────────────────────────────────
-// ─── 피로도 자동 누적 헬퍼 (외부 사이트 스크래핑 없이 자체 축적) ──────────────
+// ─── API-Sports 동기화 (축구 우선 구현) ────────────────────────────────────
+export async function syncFootballFixturesForLeague(leagueId: number, season: number) {
+  const db = await getDb();
+  if (!db) throw new Error("데이터베이스에 연결할 수 없습니다.");
+
+  const leagueRows = await db.select().from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+  const league = leagueRows[0];
+  if (!league) throw new Error("리그를 찾을 수 없습니다.");
+  if (!league.externalLeagueId) throw new Error("이 리그에 API-Sports 리그ID(externalLeagueId)가 설정되어 있지 않습니다. 종목·리그 관리에서 먼저 입력하세요.");
+
+  const fixtures = await fetchUpcomingFixtures(league.externalLeagueId, season, 15);
+  let created = 0, skipped = 0;
+
+  for (const f of fixtures) {
+    const externalId = String(f.fixture.id);
+    const existing = await db.select().from(matches).where(eq(matches.externalId, externalId)).limit(1);
+    if (existing.length > 0) { skipped++; continue; }
+
+    await db.insert(matches).values({
+      leagueId: league.id,
+      homeTeam: f.teams.home.name,
+      awayTeam: f.teams.away.name,
+      homeTeamLogo: f.teams.home.logo,
+      awayTeamLogo: f.teams.away.logo,
+      matchDate: new Date(f.fixture.date),
+      venue: f.fixture.venue?.name ?? null,
+      externalId,
+      apiData: f as unknown as Record<string, unknown>,
+      status: "scheduled",
+    });
+    created++;
+  }
+
+  return { created, skipped, total: fixtures.length };
+}
+
+
 interface PitcherBoxScore {
   playerName: string;
   teamName: string;

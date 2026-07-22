@@ -1,7 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { and, eq, desc, gte, lte, sql, isNull } from "drizzle-orm";
-import { getDb, verifyLogin, getAllUsers, createAdmin, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getAllBots, getBotById, getBotPicksForMatch, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow } from "./db";
+import { getDb, verifyLogin, getAllUsers, createAdmin, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getAllBots, getBotById, getBotPicksForMatch, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow, syncFootballFixturesForLeague } from "./db";
+import { testApiSportsConnection } from "./_core/apiSports";
 import { users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory } from "../drizzle/schema";
 import { storagePut } from "./storage";
 import { COOKIE_NAME } from "@shared/const";
@@ -82,20 +83,25 @@ export const appRouter = router({
       }),
 
     createLeague: adminProcedure
-      .input(z.object({ sportId: z.number(), name: z.string().min(1), nameEn: z.string().optional(), country: z.string().optional(), logoUrl: z.string().optional(), sortOrder: z.number().default(0) }))
+      .input(z.object({ sportId: z.number(), name: z.string().min(1), nameEn: z.string().optional(), country: z.string().optional(), logoUrl: z.string().optional(), tier: z.enum(["major", "minor"]).default("minor"), externalLeagueId: z.string().optional(), sortOrder: z.number().default(0) }))
       .mutation(async ({ input }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         await db.insert(leagues).values(input);
         return { success: true };
       }),
     updateLeague: adminProcedure
-      .input(z.object({ id: z.number(), name: z.string().optional(), country: z.string().optional(), logoUrl: z.string().optional(), sortOrder: z.number().optional(), isActive: z.boolean().optional() }))
+      .input(z.object({ id: z.number(), name: z.string().optional(), country: z.string().optional(), logoUrl: z.string().optional(), tier: z.enum(["major", "minor"]).optional(), externalLeagueId: z.string().optional(), sortOrder: z.number().optional(), isActive: z.boolean().optional() }))
       .mutation(async ({ input }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const { id, ...rest } = input;
         await db.update(leagues).set(rest).where(eq(leagues.id, id));
         return { success: true };
       }),
+    // API-Sports 실제 연동 (2026 신규 — 축구 우선 구현)
+    testApiSportsConnection: adminProcedure.mutation(() => testApiSportsConnection()),
+    syncFootballFixtures: adminProcedure
+      .input(z.object({ leagueId: z.number(), season: z.number().default(new Date().getFullYear()) }))
+      .mutation(({ input }) => syncFootballFixturesForLeague(input.leagueId, input.season)),
     deleteSport: adminProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
