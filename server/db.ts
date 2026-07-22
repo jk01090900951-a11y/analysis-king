@@ -344,17 +344,26 @@ export async function getBotStatsByCategory(botId: number) {
 export async function bulkImportLeagues(sportId: number, items: { externalLeagueId: string; name: string; country: string; logoUrl?: string | null; tier: "major" | "minor" }[]) {
   const db = await getDb();
   if (!db) throw new Error("데이터베이스에 연결할 수 없습니다.");
-  let created = 0, skipped = 0;
+  let created = 0, skipped = 0, reactivated = 0;
   for (const item of items) {
     const existing = await db.select().from(leagues).where(eq(leagues.externalLeagueId, item.externalLeagueId)).limit(1);
-    if (existing.length > 0) { skipped++; continue; }
+    if (existing.length > 0) {
+      if (!existing[0]!.isActive) {
+        // 예전에 삭제(비활성화)했던 리그를 다시 가져오는 경우 → 새로 만들지 않고 재활성화
+        await db.update(leagues).set({ isActive: true, tier: item.tier }).where(eq(leagues.id, existing[0]!.id));
+        reactivated++;
+      } else {
+        skipped++;
+      }
+      continue;
+    }
     await db.insert(leagues).values({
       sportId, name: item.name, country: item.country, logoUrl: item.logoUrl ?? null,
       externalLeagueId: item.externalLeagueId, tier: item.tier,
     });
     created++;
   }
-  return { created, skipped };
+  return { created, skipped, reactivated };
 }
 
 

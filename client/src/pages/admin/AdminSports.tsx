@@ -27,7 +27,7 @@ export default function AdminSports() {
   const [selectedLeagues, setSelectedLeagues] = useState<Record<string, "major" | "minor">>({});
 
   const createLeague = trpc.sport.createLeague.useMutation({
-    onSuccess: () => { toast.success("리그 추가 완료"); utils.sport.allLeagues.invalidate(); setLeagueDialog(false); },
+    onSuccess: (r: any) => { toast.success(r.reactivated ? "비활성화됐던 리그를 다시 활성화했습니다" : "리그 추가 완료"); utils.sport.allLeagues.invalidate(); setLeagueDialog(false); },
     onError: (e) => toast.error(e.message),
   });
   const updateSport = trpc.sport.update.useMutation({
@@ -65,8 +65,11 @@ export default function AdminSports() {
     { enabled: !!importSport && !!importCountry }
   );
   const bulkImport = trpc.sport.bulkImportLeagues.useMutation({
-    onSuccess: (r) => {
-      toast.success(`가져오기 완료 — 신규 ${r.created}건, 기존 ${r.skipped}건`);
+    onSuccess: (r: any) => {
+      const parts = [`신규 ${r.created}건`];
+      if (r.reactivated) parts.push(`재활성화 ${r.reactivated}건`);
+      parts.push(`기존 ${r.skipped}건`);
+      toast.success(`가져오기 완료 — ${parts.join(", ")}`);
       utils.sport.allLeagues.invalidate();
       setSelectedLeagues({});
       setImportDialog(false);

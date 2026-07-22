@@ -86,6 +86,16 @@ export const appRouter = router({
       .input(z.object({ sportId: z.number(), name: z.string().min(1), nameEn: z.string().optional(), country: z.string().optional(), logoUrl: z.string().optional(), tier: z.enum(["major", "minor"]).default("minor"), externalLeagueId: z.string().optional(), sortOrder: z.number().default(0) }))
       .mutation(async ({ input }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        if (input.externalLeagueId) {
+          const existing = await db.select().from(leagues).where(eq(leagues.externalLeagueId, input.externalLeagueId)).limit(1);
+          if (existing.length > 0) {
+            if (!existing[0]!.isActive) {
+              await db.update(leagues).set({ isActive: true }).where(eq(leagues.id, existing[0]!.id));
+              return { success: true, reactivated: true };
+            }
+            throw new TRPCError({ code: "BAD_REQUEST", message: "이미 등록된 API-Sports 리그ID입니다." });
+          }
+        }
         await db.insert(leagues).values(input);
         return { success: true };
       }),
