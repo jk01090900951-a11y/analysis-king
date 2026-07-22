@@ -1,5 +1,5 @@
 import { trpc } from "@/lib/trpc";
-import { Users, Trophy, Target, Clock, TrendingUp, ArrowRight } from "lucide-react";
+import { Shield, Trophy, FileText, Swords, ArrowRight } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 
@@ -7,17 +7,17 @@ export default function AdminDashboard() {
   const { data: stats } = trpc.admin.stats.useQuery();
 
   const statCards = [
-    { icon: Users, label: "총 회원", value: stats?.totalUsers ?? 0, color: "text-blue-400", bg: "bg-blue-500/10" },
-    { icon: Trophy, label: "대기중 교환신청", value: stats?.pendingExchanges ?? 0, color: "text-primary", bg: "bg-primary/10" },
-    { icon: Target, label: "총 예측 참여", value: stats?.totalPredictions ?? 0, color: "text-green-400", bg: "bg-green-500/10" },
-    { icon: Clock, label: "교환 대기", value: stats?.pendingExchanges ?? 0, color: "text-orange-400", bg: "bg-orange-500/10" },
+    { icon: Shield, label: "관리자 계정", value: stats?.totalAdmins ?? 0, color: "text-blue-400", bg: "bg-blue-500/10" },
+    { icon: Swords, label: "등록 경기", value: stats?.totalMatches ?? 0, color: "text-primary", bg: "bg-primary/10" },
+    { icon: Trophy, label: "분석가(봇)", value: stats?.totalBots ?? 0, color: "text-green-400", bg: "bg-green-500/10" },
+    { icon: FileText, label: "생성된 분석글", value: stats?.totalAnalyses ?? 0, color: "text-orange-400", bg: "bg-orange-500/10" },
   ];
 
   const quickLinks = [
-    { href: "/admin/categories", label: "카테고리 추가", desc: "새 카테고리 생성 및 관리" },
-    { href: "/admin/cards", label: "예측 카드 생성", desc: "새 예측 카드 등록" },
-    { href: "/admin/settle", label: "결과 입력", desc: "경기 결과 입력 및 포인트 정산" },
-    { href: "/admin/exchange", label: "교환 처리", desc: "교환 신청 처리 및 수단 관리" },
+    { href: "/admin/sports", label: "종목·리그 관리", desc: "종목 및 리그 tier(빅리그/비인기) 관리" },
+    { href: "/admin/matches", label: "경기·분석글 생성", desc: "경기 목록 확인 및 AI 픽/분석글 생성" },
+    { href: "/admin/bots", label: "분석가 관리", desc: "20명 분석가 정보 및 가중치 관리" },
+    { href: "/admin/settle", label: "결과 정산", desc: "경기 결과 확인 및 봇 승률 정산" },
   ];
 
   return (

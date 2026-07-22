@@ -1,14 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import {
-  Trophy, ChevronDown, ChevronUp, Star, Users, Target,
+  Trophy, ChevronDown, ChevronUp, Star,
   Shield, Zap, BarChart2, ArrowLeft
 } from "lucide-react";
 
@@ -160,31 +159,22 @@ export default function MatchDetail() {
   const { id } = useParams<{ id: string }>();
   const matchId = parseInt(id ?? "0");
   const [, navigate] = useLocation();
-  const { user, isAuthenticated } = useAuth();
-
-  const [selectedWDL, setSelectedWDL] = useState<"home" | "draw" | "away" | null>(null);
-  const [selectedOU, setSelectedOU] = useState<"over" | "under" | null>(null);
+  const { isAdmin } = useAuth();
 
   const { data: match, isLoading: matchLoading } = trpc.match.getById.useQuery({ id: matchId }, { enabled: !!matchId });
   const { data: analyses = [], refetch: refetchAnalyses } = trpc.analysis.list.useQuery({ matchId }, { enabled: !!matchId });
   const { data: h2h } = trpc.analysis.headToHead.useQuery({ matchId }, { enabled: !!matchId });
-  const { data: myPrediction, refetch: refetchPrediction } = trpc.prediction.mine.useQuery({ matchId }, { enabled: !!matchId && isAuthenticated });
-  const { data: predStats } = trpc.prediction.stats.useQuery({ matchId }, { enabled: !!matchId });
-  const { data: me, refetch: refetchMe } = trpc.auth.me.useQuery();
 
   const generateAnalysis = trpc.analysis.generate.useMutation({
     onSuccess: () => { refetchAnalyses(); toast.success("분석글이 생성되었습니다."); },
     onError: (e) => toast.error(e.message),
   });
-  const submitPrediction = trpc.prediction.submit.useMutation({
-    onSuccess: () => { refetchPrediction(); refetchMe(); toast.success("예측이 등록되었습니다! +10P 적립"); },
-    onError: (e) => toast.error(e.message),
-  });
-  const handleSubmitPrediction = () => {
-    if (!isAuthenticated) { window.location.href = getLoginUrl(); return; }
-    if (!selectedWDL) { toast.error("승무패를 선택해주세요."); return; }
-    submitPrediction.mutate({ matchId, pick: selectedWDL, pickType: "win_draw_lose" });
-  };
+  const incrementView = trpc.analysis.incrementView.useMutation();
+
+  useEffect(() => {
+    if (matchId) incrementView.mutate({ matchId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchId]);
 
   if (matchLoading) return (
     <div className="min-h-screen flex items-center justify-center">
@@ -203,16 +193,8 @@ export default function MatchDetail() {
     </div>
   );
 
-  const isAdmin = user?.role === "admin";
   const hasAnalyses = analyses.length > 0;
   const matchDate = new Date(match.matchDate);
-  const isResultRevealed = !!myPrediction?.isSettled;
-  const canReveal = false; // 2026: 결과 확인은 서버 자동 정산으로 대체 (더 이상 사용자 클릭 불필요)
-
-  const totalVotes = (predStats?.home ?? 0) + (predStats?.draw ?? 0) + (predStats?.away ?? 0);
-  const homeP = totalVotes > 0 ? Math.round(((predStats?.home ?? 0) / totalVotes) * 100) : 33;
-  const drawP = totalVotes > 0 ? Math.round(((predStats?.draw ?? 0) / totalVotes) * 100) : 34;
-  const awayP = totalVotes > 0 ? 100 - homeP - drawP : 33;
 
   return (
     <div className="min-h-screen bg-background">
@@ -224,12 +206,6 @@ export default function MatchDetail() {
             <p className="text-xs text-foreground/50 truncate">{match.leagueName}</p>
             <p className="text-sm font-semibold truncate">{match.homeTeam} vs {match.awayTeam}</p>
           </div>
-          {me && (
-            <div className="ml-auto shrink-0 flex items-center gap-1.5 bg-primary/10 rounded-full px-3 py-1">
-              <Star className="w-3.5 h-3.5 text-yellow-400" />
-              <span className="text-sm font-bold text-yellow-400">{(me as any).points?.toLocaleString() ?? 0}P</span>
-            </div>
-          )}
         </div>
       </div>
 
@@ -249,7 +225,7 @@ export default function MatchDetail() {
 
             </div>
             <div className="text-center">
-              {isResultRevealed && match.homeScore !== null ? (
+              {match.status === "finished" && match.homeScore !== null ? (
                 <div className="text-3xl font-black text-foreground">{match.homeScore} : {match.awayScore}</div>
               ) : (
                 <div className="text-2xl font-black text-foreground/30">VS</div>
@@ -279,71 +255,6 @@ export default function MatchDetail() {
               <div className="flex justify-center mt-1">
                 <span className="text-[10px] text-foreground/30">무 {h2h.draws}회 · 평균 {h2h.avgTotalGoals}골</span>
               </div>
-            </div>
-          )}
-        </div>
-
-        {/* 예측 답지 */}
-        <div className="rounded-2xl border border-border/40 p-5 space-y-4" style={{ background: "rgba(20,20,30,0.8)" }}>
-          <div className="flex items-center gap-2">
-            <Target className="w-4 h-4 text-primary" />
-            <h2 className="font-bold text-sm">내 예측 선택</h2>
-            {myPrediction && <Badge variant="outline" className="text-[10px] ml-auto border-green-500/30 text-green-400">✓ 예측 완료</Badge>}
-          </div>
-          {totalVotes > 0 && (
-            <div className="space-y-1.5">
-              <p className="text-[11px] text-foreground/40 flex items-center gap-1"><Users className="w-3 h-3" />커뮤니티 예측 현황 ({totalVotes}명)</p>
-              <div className="flex h-3 rounded-full overflow-hidden gap-0.5">
-                <div className="bg-blue-500 flex items-center justify-center" style={{ width: `${homeP}%` }}>{homeP > 15 && <span className="text-[9px] text-white font-bold">{homeP}%</span>}</div>
-                <div className="bg-yellow-500 flex items-center justify-center" style={{ width: `${drawP}%` }}>{drawP > 15 && <span className="text-[9px] text-white font-bold">{drawP}%</span>}</div>
-                <div className="bg-red-500 flex items-center justify-center" style={{ width: `${awayP}%` }}>{awayP > 15 && <span className="text-[9px] text-white font-bold">{awayP}%</span>}</div>
-              </div>
-              <div className="flex justify-between text-[10px] text-foreground/40"><span>홈 {homeP}%</span><span>무 {drawP}%</span><span>원정 {awayP}%</span></div>
-            </div>
-          )}
-          {!myPrediction ? (
-            <>
-              <div>
-                <p className="text-xs text-foreground/50 mb-2">승무패 선택 <span className="text-primary">*</span></p>
-                <div className="grid grid-cols-3 gap-2">
-                  {(["home", "draw", "away"] as const).map((pick) => (
-                    <button key={pick} onClick={() => setSelectedWDL(pick)}
-                      className={`py-3 rounded-xl text-sm font-bold border-2 transition-all duration-150 active:scale-95 ${selectedWDL === pick ? pick === "home" ? "bg-blue-500 border-blue-400 text-white" : pick === "draw" ? "bg-yellow-500 border-yellow-400 text-black" : "bg-red-500 border-red-400 text-white" : "bg-white/3 border-border/30 text-foreground/70 hover:border-border/60"}`}>
-                      {pick === "home" ? "홈 승" : pick === "draw" ? "무승부" : "원정 승"}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {match.overUnderLine && (
-                <div>
-                  <p className="text-xs text-foreground/50 mb-2">언더/오버 ({match.overUnderLine}골 기준)</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    {(["under", "over"] as const).map((pick) => (
-                      <button key={pick} onClick={() => setSelectedOU(pick)}
-                        className={`py-3 rounded-xl text-sm font-bold border-2 transition-all duration-150 active:scale-95 ${selectedOU === pick ? pick === "over" ? "bg-green-500 border-green-400 text-white" : "bg-purple-500 border-purple-400 text-white" : "bg-white/3 border-border/30 text-foreground/70 hover:border-border/60"}`}>
-                        {pick === "over" ? `오버 ${match.overUnderLine}+` : `언더 ${match.overUnderLine}-`}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              <Button onClick={handleSubmitPrediction} disabled={!selectedWDL || submitPrediction.isPending} className="w-full h-11 bg-gradient-to-r from-primary to-indigo-600 hover:from-primary/90 hover:to-indigo-500 text-white font-bold">
-                {submitPrediction.isPending ? "제출 중..." : "예측 제출하기 (참여만 해도 +10P)"}
-              </Button>
-            </>
-          ) : (
-            <div className="space-y-3">
-              <div className="p-4 rounded-xl bg-primary/5 border border-primary/20 text-center">
-                <p className="text-xs text-foreground/50 mb-1">내 예측</p>
-                <p className={`text-xl font-black ${PICK_COLOR[myPrediction.wdlChoice ?? myPrediction.ouChoice ?? ""] ?? "text-primary"}`}>{PICK_LABEL[myPrediction.wdlChoice ?? myPrediction.ouChoice ?? ""] ?? myPrediction.wdlChoice ?? myPrediction.ouChoice}</p>
-              </div>
-              {isResultRevealed ? (
-                <div className={`p-3 rounded-xl text-center font-bold ${myPrediction.isCorrect ? "bg-green-500/10 border border-green-500/30 text-green-400" : "bg-red-500/10 border border-red-500/30 text-red-400"}`}>
-                  {myPrediction.isCorrect ? `🎉 정답! +${(myPrediction.bonusPointsEarned ?? 0) + (myPrediction.basePointsEarned ?? 0)}P 획득` : `😔 아쉽네요. 참여 포인트 +${myPrediction.basePointsEarned ?? 10}P 지급`}
-                </div>
-              ) : (
-                <p className="text-center text-xs text-foreground/40 py-2">경기 종료 후 결과가 자동으로 정산됩니다.</p>
-              )}
             </div>
           )}
         </div>

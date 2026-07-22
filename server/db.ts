@@ -1,6 +1,7 @@
 import { eq, desc, and, or, inArray, gte, lte, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users, sports, leagues, matches, aiBots, botPicks, userPredictions, pointHistory, exchangeMethods, exchangeRequests, matchAnalysis, headToHead, events, analysisViews, systemSettings, botChampionHistory, reports, comments, adLog, adFreeSession, pitcherStartHistory, playerAppearanceLog } from "../drizzle/schema";
+import bcrypt from "bcryptjs";
+import { InsertUser, users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory, pitcherStartHistory, playerAppearanceLog } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -17,52 +18,59 @@ export async function getDb() {
   return _db;
 }
 
-// ─── Users ────────────────────────────────────────────────────────────────────
-export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) throw new Error("User openId is required for upsert");
-  const db = await getDb();
-  if (!db) { console.warn("[Database] Cannot upsert user: database not available"); return; }
-
+// ─── Admin Auth (아이디/비밀번호, 카카오 폐지) ─────────────────────────────────
+export async function ensureBootstrapAdmin(): Promise<void> {
   try {
-    const values: InsertUser = { openId: user.openId };
-    const updateSet: Record<string, unknown> = {};
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-    textFields.forEach(assignNullable);
-    if (user.lastSignedIn !== undefined) { values.lastSignedIn = user.lastSignedIn; updateSet.lastSignedIn = user.lastSignedIn; }
-    if (user.role !== undefined) { values.role = user.role; updateSet.role = user.role; }
-    else if (user.openId === ENV.ownerOpenId) { values.role = 'admin'; updateSet.role = 'admin'; }
-    if (!values.lastSignedIn) values.lastSignedIn = new Date();
-    if (Object.keys(updateSet).length === 0) updateSet.lastSignedIn = new Date();
-
-    await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet });
+    const db = await getDb();
+    if (!db) { console.warn("[Auth] DB에 연결할 수 없어 관리자 부트스트랩을 건너뜁니다."); return; }
+    const existing = await db.select().from(users).limit(1);
+    if (existing.length > 0) return; // 이미 관리자 계정 있음
+    if (!ENV.ADMIN_USERNAME || !ENV.ADMIN_PASSWORD) {
+      console.warn("[Auth] 관리자 계정이 없고 .env의 ADMIN_USERNAME/ADMIN_PASSWORD도 비어있습니다 — 로그인 불가 상태입니다.");
+      return;
+    }
+    const passwordHash = await bcrypt.hash(ENV.ADMIN_PASSWORD, 10);
+    await db.insert(users).values({ username: ENV.ADMIN_USERNAME, passwordHash, name: "관리자" });
+    console.log(`[Auth] 최초 관리자 계정이 생성되었습니다: ${ENV.ADMIN_USERNAME}`);
   } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
+    // DB가 아직 준비 안 됐거나 일시적 문제여도 서버 자체는 계속 켜져 있어야 함 (재시도는 재기동 시)
+    console.error("[Auth] 관리자 부트스트랩 중 오류(서버는 계속 실행됩니다):", error);
   }
 }
 
-export async function getUserByOpenId(openId: string) {
+export async function getUserByUsername(username: string) {
   const db = await getDb();
   if (!db) return undefined;
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-  return result.length > 0 ? result[0] : undefined;
+  const result = await db.select().from(users).where(eq(users.username, username)).limit(1);
+  return result[0];
 }
 
-export async function getAllUsers() {
+export async function getUserById(id: number) {
   const db = await getDb();
-  if (!db) return [];
-  return db.select().from(users).orderBy(desc(users.createdAt));
+  if (!db) return undefined;
+  const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
+  return result[0];
 }
 
-// ─── Sports & Leagues ─────────────────────────────────────────────────────────
+// 로그인 검증 — 성공 시 lastSignedIn 갱신 후 계정 반환, 실패 시 null
+export async function verifyLogin(username: string, password: string) {
+  const user = await getUserByUsername(username);
+  if (!user) return null;
+  const valid = await bcrypt.compare(password, user.passwordHash);
+  if (!valid) return null;
+  const db = await getDb();
+  if (db) await db.update(users).set({ lastSignedIn: new Date() }).where(eq(users.id, user.id));
+  return user;
+}
+
+// 관리자 화면에서 새 관리자 계정 추가 시 사용 (다중 관리자 지원)
+export async function createAdmin(username: string, password: string, name?: string) {
+  const db = await getDb();
+  if (!db) throw new Error("데이터베이스에 연결할 수 없습니다.");
+  const passwordHash = await bcrypt.hash(password, 10);
+  await db.insert(users).values({ username, passwordHash, name: name ?? username });
+}
+
 export async function getAllSports() {
   const db = await getDb();
   if (!db) return [];
@@ -209,131 +217,6 @@ export async function getBotPicksForMatch(matchId: number) {
 }
 
 // ─── User Predictions ─────────────────────────────────────────────────────────
-export async function getUserPredictionForMatch(userId: number, matchId: number) {
-  const db = await getDb();
-  if (!db) return null;
-  const result = await db.select().from(userPredictions)
-    .where(and(eq(userPredictions.userId, userId), eq(userPredictions.matchId, matchId)))
-    .limit(1);
-  return result[0] ?? null;
-}
-
-export async function getUserPredictions(userId: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select({
-    id: userPredictions.id,
-    matchId: userPredictions.matchId,
-    pickType: userPredictions.pickType,
-    wdlChoice: userPredictions.wdlChoice,
-    ouChoice: userPredictions.ouChoice,
-    basePointsEarned: userPredictions.basePointsEarned,
-    bonusPointsEarned: userPredictions.bonusPointsEarned,
-    isCorrect: userPredictions.isCorrect,
-    isSettled: userPredictions.isSettled,
-    resultRevealedAt: userPredictions.resultRevealedAt,
-    createdAt: userPredictions.createdAt,
-    homeTeam: matches.homeTeam,
-    awayTeam: matches.awayTeam,
-    matchDate: matches.matchDate,
-    matchStatus: matches.status,
-    leagueName: leagues.name,
-    sportName: sports.name,
-  })
-  .from(userPredictions)
-  .leftJoin(matches, eq(userPredictions.matchId, matches.id))
-  .leftJoin(leagues, eq(matches.leagueId, leagues.id))
-  .leftJoin(sports, eq(leagues.sportId, sports.id))
-  .where(eq(userPredictions.userId, userId))
-  .orderBy(desc(userPredictions.createdAt));
-}
-
-export async function getMatchPredictionStats(matchId: number) {
-  const db = await getDb();
-  if (!db) return { total: 0, home: 0, draw: 0, away: 0, over: 0, under: 0 };
-  const result = await db.select().from(userPredictions).where(eq(userPredictions.matchId, matchId));
-  const total = result.length;
-  const home = result.filter(p => p.wdlChoice === 'home').length;
-  const draw = result.filter(p => p.wdlChoice === 'draw').length;
-  const away = result.filter(p => p.wdlChoice === 'away').length;
-  const over = result.filter(p => p.ouChoice === 'over').length;
-  const under = result.filter(p => p.ouChoice === 'under').length;
-  return { total, home, draw, away, over, under };
-}
-
-// ─── Point History ────────────────────────────────────────────────────────────
-export async function getUserPointHistory(userId: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(pointHistory).where(eq(pointHistory.userId, userId)).orderBy(desc(pointHistory.createdAt)).limit(100);
-}
-
-export async function addPointHistory(userId: number, type: typeof pointHistory.$inferInsert['type'], amount: number, balance: number, description: string, refId?: number) {
-  const db = await getDb();
-  if (!db) return;
-  await db.insert(pointHistory).values({ userId, type, amount, balance, description, refId });
-}
-
-// ─── Exchange ─────────────────────────────────────────────────────────────────
-export async function getExchangeMethods() {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(exchangeMethods).where(eq(exchangeMethods.isActive, true)).orderBy(exchangeMethods.sortOrder);
-}
-
-export async function getAllExchangeMethods() {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(exchangeMethods).orderBy(exchangeMethods.sortOrder);
-}
-
-export async function getUserExchangeRequests(userId: number) {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select({
-    id: exchangeRequests.id,
-    points: exchangeRequests.points,
-    amount: exchangeRequests.amount,
-    accountInfo: exchangeRequests.accountInfo,
-    status: exchangeRequests.status,
-    adminNote: exchangeRequests.adminNote,
-    createdAt: exchangeRequests.createdAt,
-    methodName: exchangeMethods.name,
-    methodType: exchangeMethods.type,
-    methodLogo: exchangeMethods.logoUrl,
-  })
-  .from(exchangeRequests)
-  .leftJoin(exchangeMethods, eq(exchangeRequests.methodId, exchangeMethods.id))
-  .where(eq(exchangeRequests.userId, userId))
-  .orderBy(desc(exchangeRequests.createdAt));
-}
-
-export async function getAllExchangeRequests() {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select({
-    id: exchangeRequests.id,
-    userId: exchangeRequests.userId,
-    points: exchangeRequests.points,
-    amount: exchangeRequests.amount,
-    accountInfo: exchangeRequests.accountInfo,
-    status: exchangeRequests.status,
-    adminNote: exchangeRequests.adminNote,
-    createdAt: exchangeRequests.createdAt,
-    methodName: exchangeMethods.name,
-    methodType: exchangeMethods.type,
-    userName: users.name,
-    userEmail: users.email,
-  })
-  .from(exchangeRequests)
-  .leftJoin(exchangeMethods, eq(exchangeRequests.methodId, exchangeMethods.id))
-  .leftJoin(users, eq(exchangeRequests.userId, users.id))
-  .orderBy(desc(exchangeRequests.createdAt));
-}
-
-// ─── Admin Stats ──────────────────────────────────────────────────────────────
-
-// ─── Match Analysis ───────────────────────────────────────────────────────────
 export async function getMatchAnalyses(matchId: number) {
   const db = await getDb();
   if (!db) return [];
@@ -375,23 +258,26 @@ export async function getHeadToHead(matchId: number) {
   return result[0] ?? null;
 }
 
-export async function getAdminStats() {
+export async function getAllUsers() {
   const db = await getDb();
-  if (!db) return { totalUsers: 0, totalMatches: 0, totalPredictions: 0, totalPointsIssued: 0, pendingExchanges: 0 };
-  const [userCount] = await db.select({ count: sql<number>`count(*)` }).from(users);
-  const [matchCount] = await db.select({ count: sql<number>`count(*)` }).from(matches);
-  const [predCount] = await db.select({ count: sql<number>`count(*)` }).from(userPredictions);
-  const [pendingEx] = await db.select({ count: sql<number>`count(*)` }).from(exchangeRequests).where(eq(exchangeRequests.status, 'pending'));
-  const [pointsSum] = await db.select({ total: sql<number>`COALESCE(SUM(amount), 0)` }).from(pointHistory).where(sql`amount > 0`);
-  return {
-    totalUsers: Number(userCount?.count ?? 0),
-    totalMatches: Number(matchCount?.count ?? 0),
-    totalPredictions: Number(predCount?.count ?? 0),
-    totalPointsIssued: Number(pointsSum?.total ?? 0),
-    pendingExchanges: Number(pendingEx?.count ?? 0),
-  };
+  if (!db) return [];
+  return db.select().from(users).orderBy(desc(users.createdAt));
 }
 
+export async function getAdminStats() {
+  const db = await getDb();
+  if (!db) return { totalAdmins: 0, totalMatches: 0, totalBots: 0, totalAnalyses: 0 };
+  const [adminCount] = await db.select({ count: sql<number>`count(*)` }).from(users);
+  const [matchCount] = await db.select({ count: sql<number>`count(*)` }).from(matches);
+  const [botCount] = await db.select({ count: sql<number>`count(*)` }).from(aiBots);
+  const [analysisCount] = await db.select({ count: sql<number>`count(*)` }).from(matchAnalysis);
+  return {
+    totalAdmins: Number(adminCount?.count ?? 0),
+    totalMatches: Number(matchCount?.count ?? 0),
+    totalBots: Number(botCount?.count ?? 0),
+    totalAnalyses: Number(analysisCount?.count ?? 0),
+  };
+}
 
 // ─── Bot Profile (분석가 개인 프로필) ───────────────────────────────────────────
 export async function getBotProfile(botId: number) {
@@ -453,39 +339,7 @@ export async function getBotStatsByCategory(botId: number) {
 // 2026 삭제됨: getUserAnalysisList (유저 분석글 작성 폐지 — 4절 참고, matchAnalysis(AI 분석가 전용)로 대체)
 
 // ─── Events (월간 이벤트) ────────────────────────────────────────────────────
-export async function getActiveEvents() {
-  const db = await getDb();
-  if (!db) return [];
-  const now = new Date();
-  return db.select().from(events)
-    .where(and(
-      eq(events.isActive, true),
-      eq(events.status, 'active'),
-      lte(events.startDate, now),
-      gte(events.endDate, now)
-    ))
-    .orderBy(desc(events.createdAt));
-}
-
-export async function getUpcomingEvents(limit: number = 3) {
-  const db = await getDb();
-  if (!db) return [];
-  const now = new Date();
-  return db.select().from(events)
-    .where(and(
-      eq(events.isActive, true),
-      eq(events.status, 'upcoming'),
-      gte(events.startDate, now)
-    ))
-    .orderBy(events.startDate)
-    .limit(limit);
-}
-
-// ══════════════════════════════════════════════════════════════════════════
-// 피로도 자동 누적 헬퍼 (2026 신규) — 외부 API의 실시간/고급 데이터 의존 없이
-// 우리 DB에 쌓인 자체 이력만으로 계산. match.settle에서 호출됨.
-// ══════════════════════════════════════════════════════════════════════════
-
+// ─── 피로도 자동 누적 헬퍼 (외부 사이트 스크래핑 없이 자체 축적) ──────────────
 interface PitcherBoxScore {
   playerName: string;
   teamName: string;
@@ -496,9 +350,6 @@ interface PitcherBoxScore {
   strikeouts?: number;
 }
 
-// 야구: 경기 정산 시 투수별 등판 이력 기록 + 피로도 점수 자동 계산
-// TODO: pitchers 배열은 match.apiData(API-Sports 원본 응답)에서 실제 필드명에 맞게
-//   파싱하는 어댑터 함수가 필요합니다. 여기서는 이미 파싱된 형태를 받는다고 가정합니다.
 export async function recordPitcherStarts(matchId: number, matchDate: Date, pitchers: PitcherBoxScore[]) {
   const db = await getDb();
   if (!db) return;

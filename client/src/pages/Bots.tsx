@@ -34,7 +34,7 @@ export default function Bots() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
           <div className="p-4 rounded-xl bg-yellow-500/10 border border-yellow-500/30">
             <div className="flex items-center gap-2 mb-2"><Trophy className="w-5 h-5 text-yellow-500" /><span className="font-bold text-yellow-500">1~5위 분석가</span></div>
-            <p className="text-sm text-muted-foreground">분석글은 누구나 자유롭게 열람 가능 (읽으면 포인트 자동 적립)</p>
+            <p className="text-sm text-muted-foreground">분석글은 누구나 자유롭게 열람 가능</p>
           </div>
           <div className="p-4 rounded-xl bg-gray-500/10 border border-gray-500/30">
             <div className="flex items-center gap-2 mb-2"><TrendingUp className="w-5 h-5 text-gray-400" /><span className="font-bold text-gray-400">6~20위 분석가</span></div>

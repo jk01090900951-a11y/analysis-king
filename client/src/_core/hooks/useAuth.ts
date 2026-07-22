@@ -9,7 +9,7 @@ export function useAuth() {
   return {
     user: user ?? null,
     isAuthenticated: !!user,
-    isAdmin: user?.role === "admin",
+    isAdmin: !!user, // 2026: 로그인 자체가 관리자 전용이라 로그인 여부 = 관리자 여부
     isLoading,
     loading: isLoading, // 일부 컴포넌트에서 loading 이름으로 참조
     logout: () => logoutMutation.mutate(),

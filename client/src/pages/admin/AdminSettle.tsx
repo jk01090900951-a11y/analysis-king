@@ -8,14 +8,6 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-// 정답 보너스 오답률 연동 미리보기 계산 (분석왕 V3.0 정책 14절과 동일 로직)
-function previewBonus(wrongRate: number) {
-  if (wrongRate >= 0.9) return 30;
-  if (wrongRate >= 0.7) return 20;
-  if (wrongRate >= 0.5) return 10;
-  return 0;
-}
-
 const settleStatusInfo: Record<string, { label: string; color: string; icon: any }> = {
   pending: { label: "정산 대기", color: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30", icon: RefreshCw },
   settled: { label: "정산 완료", color: "bg-green-500/20 text-green-400 border-green-500/30", icon: CheckCircle },
@@ -76,7 +68,6 @@ export default function AdminSettle() {
               (matches ?? []).filter((m: any) => m.settleStatus !== "settled").map((m: any) => {
                 const info = settleStatusInfo[m.settleStatus ?? "pending"] ?? settleStatusInfo.pending;
                 const Icon = info.icon;
-                const wrongRate = m.predictionCount > 0 ? (m.wrongCount ?? 0) / m.predictionCount : 0;
                 return (
                   <div key={m.id} className="p-4 rounded-xl bg-card border border-border">
                     <div className="flex items-center gap-4">
@@ -88,14 +79,12 @@ export default function AdminSettle() {
                       <Badge className={`text-xs border ${info.color}`}><Icon className="w-3 h-3 mr-1" />{info.label}</Badge>
                       <Button size="sm" variant="ghost" onClick={() => openEdit(m)}><Edit className="w-3 h-3 mr-1" />스코어 수정</Button>
                       <Button size="sm" onClick={() => runSettlement.mutate({ matchId: m.id })} disabled={runSettlement.isPending || m.homeScore == null}>
-                        정산 실행
+                        정산 실행 (봇 승률 갱신)
                       </Button>
                     </div>
-                    {m.predictionCount > 0 && (
-                      <div className="mt-3 pt-3 border-t border-border/30 text-xs text-muted-foreground flex items-center gap-4">
-                        <span>참여 {m.predictionCount}명</span>
-                        <span>오답률 {(wrongRate * 100).toFixed(0)}%</span>
-                        <span className="text-primary font-medium">→ 정답 보너스 예상: 기본10P + {previewBonus(wrongRate)}P = {10 + previewBonus(wrongRate)}P/인</span>
+                    {m.viewCount > 0 && (
+                      <div className="mt-3 pt-3 border-t border-border/30 text-xs text-muted-foreground">
+                        <span>조회수 {m.viewCount.toLocaleString()}</span>
                       </div>
                     )}
                   </div>

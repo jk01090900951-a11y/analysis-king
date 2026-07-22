@@ -1,8 +1,6 @@
 import { useState } from "react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
-import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
 import Navbar from "@/components/Navbar";
 import CategoryMenu from "@/components/CategoryMenu";
 import LiveScoreCarousel from "@/components/LiveScoreCarousel";
@@ -16,7 +14,6 @@ const statusLabel: Record<string, string> = { scheduled: "예정", live: "진행
 const statusClass: Record<string, string> = { scheduled: "status-scheduled", live: "status-live", finished: "status-finished", cancelled: "status-cancelled" };
 
 export default function Home() {
-  const { isAuthenticated } = useAuth();
   const [selectedSport, setSelectedSport] = useState<number | null>(null);
   
   // 라이브 경기 데이터 쿼리 (진행 중이거나 예정된 경기)
@@ -29,8 +26,6 @@ export default function Home() {
   const { data: bots } = trpc.bot.list.useQuery();
   const { data: matches } = trpc.match.list.useQuery({ status: "scheduled", limit: 6 });
   const { data: botChampion } = trpc.botChampion.recent.useQuery();
-  const { data: activeEvents } = trpc.event.activeEvents.useQuery();
-  const { data: upcomingEvents } = trpc.event.upcomingEvents.useQuery({ limit: 3 });
 
   const topBots = bots?.slice(0, 3) ?? [];
 
@@ -47,28 +42,21 @@ export default function Home() {
           <div className="max-w-2xl">
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20 text-primary text-sm font-medium mb-6">
               <Zap className="w-3.5 h-3.5" />
-              <span>정밀 분석 스포츠 예측 플랫폼</span>
+              <span>정밀 분석 스포츠 콘텐츠</span>
             </div>
             <h1 className="text-4xl md:text-5xl font-bold leading-tight mb-4">
-              <span className="text-foreground">20명의 전문 분석가가</span><br />
-              <span className="gold-text">경기 결과를 예측합니다</span>
+              <span className="text-foreground">20명의 분석가가</span><br />
+              <span className="gold-text">경기 결과를 분석합니다</span>
             </h1>
             <p className="text-lg text-muted-foreground mb-8 leading-relaxed">
-              야구, 축구, 농구 등 다양한 스포츠 경기에서 전문 분석가의 예측을 확인하고,
-              직접 예측에 참여해 포인트를 적립하세요. 참여만 해도 꼽 없이 적립됩니다.
+              야구, 축구, 농구 등 다양한 스포츠 경기 분석글을 회원가입 없이 누구나 무료로 열람할 수 있습니다.
             </p>
             <div className="flex flex-wrap gap-3">
-              {isAuthenticated ? (
-                <Link href="/matches">
-                  <Button size="lg" className="gold-gradient text-black font-bold hover:opacity-90">
-                    경기 예측 참여하기 <ChevronRight className="w-4 h-4 ml-1" />
-                  </Button>
-                </Link>
-              ) : (
-                <Button size="lg" className="gold-gradient text-black font-bold hover:opacity-90" onClick={() => window.location.href = getLoginUrl()}>
-                  무료로 시작하기 <ChevronRight className="w-4 h-4 ml-1" />
+              <Link href="/matches">
+                <Button size="lg" className="gold-gradient text-black font-bold hover:opacity-90">
+                  경기 분석 보러가기 <ChevronRight className="w-4 h-4 ml-1" />
                 </Button>
-              )}
+              </Link>
               <Link href="/bots">
                 <Button size="lg" variant="outline" className="border-border hover:border-primary/50">
                   분석가 랭킹 보기
@@ -80,9 +68,9 @@ export default function Home() {
           {/* Stats Row */}
           <div className="grid grid-cols-3 gap-4 mt-12 max-w-lg">
             {[
-              { label: "전문 분석가", value: "20명", icon: "🏆" },
-              { label: "참여 기본 포인트", value: "10P", icon: "🎁" },
-              { label: "포인트 교환", value: "3종", icon: "💳" },
+              { label: "분석가", value: "20명", icon: "🏆" },
+              { label: "회원가입", value: "불필요", icon: "🔓" },
+              { label: "이용료", value: "무료", icon: "🎁" },
             ].map((stat) => (
               <div key={stat.label} className="text-center p-4 rounded-xl bg-card border border-border">
                 <div className="text-2xl mb-1">{stat.icon}</div>
@@ -180,7 +168,7 @@ export default function Home() {
           <div className="flex items-center justify-between mb-6">
             <div>
               <h2 className="text-2xl font-bold">오늘의 경기</h2>
-              <p className="text-muted-foreground text-sm mt-1">예측에 참여하고 포인트를 적립하세요</p>
+              <p className="text-muted-foreground text-sm mt-1">분석가들의 경기 분석을 확인하세요</p>
             </div>
             <Link href="/matches">
               <Button variant="ghost" size="sm" className="text-primary">전체보기 <ChevronRight className="w-4 h-4 ml-1" /></Button>
@@ -265,12 +253,11 @@ export default function Home() {
       <section className="py-12 border-t border-border bg-card/30">
         <div className="container">
           <h2 className="text-2xl font-bold text-center mb-10">이용 방법</h2>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {[
-              { step: "01", icon: <Shield className="w-6 h-6" />, title: "로그인", desc: "소셜 계정으로 간편하게 가입하고 300P를 받으세요" },
-              { step: "02", icon: <BarChart2 className="w-6 h-6" />, title: "분석글 읽기", desc: "전문 분석가와 회원들의 분석글을 누구나 자유롭게 읽을 수 있어요. 열람 제한 없음" },
-              { step: "03", icon: <Zap className="w-6 h-6" />, title: "포인트 자동 적립", desc: "글을 읽거나 직접 작성하면 포인트가 쌓입니다. 광고 시청과는 무관해요" },
-              { step: "04", icon: <Trophy className="w-6 h-6" />, title: "포인트 교환", desc: "적립된 포인트를 네이버페이·카카오페이·상품권으로 교환하세요" },
+              { step: "01", icon: <BarChart2 className="w-6 h-6" />, title: "경기 선택", desc: "관심 있는 경기를 골라주세요. 회원가입 없이 바로 이용할 수 있습니다" },
+              { step: "02", icon: <Zap className="w-6 h-6" />, title: "분석글 읽기", desc: "20명의 분석가가 쓴 분석글을 자유롭게 읽어보세요. 열람 제한이 전혀 없습니다" },
+              { step: "03", icon: <Trophy className="w-6 h-6" />, title: "무료 이용", desc: "모든 콘텐츠는 광고 수익만으로 운영됩니다. 결제나 가입 없이 계속 이용하실 수 있어요" },
             ].map((item) => (
               <div key={item.step} className="text-center">
                 <div className="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary mx-auto mb-4">
@@ -285,16 +272,16 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Point System */}
+      {/* Why Free */}
       <section className="py-12 border-t border-border">
         <div className="container">
-          <h2 className="text-2xl font-bold text-center mb-2">포인트 적립 방식</h2>
-          <p className="text-center text-muted-foreground mb-8">참여만 해도 꽝 없이 포인트가 적립됩니다</p>
+          <h2 className="text-2xl font-bold text-center mb-2">완전 무료로 운영됩니다</h2>
+          <p className="text-center text-muted-foreground mb-8">회원가입도, 결제도 필요 없습니다 — 광고 수익만으로 서비스를 운영합니다</p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-3xl mx-auto">
             {[
-              { title: "분석글 작성", points: "+1P", desc: "300자 이상 정상 게시물 작성 시 지급 (1일 최대 20개)", color: "text-blue-400", bg: "bg-blue-400/10" },
-              { title: "분석글 조회", points: "최대 +8P", desc: "다른 회원이 내 글을 읽으면 등급별 포인트 지급, 글을 읽는 사람도 함께 적립", color: "text-primary", bg: "bg-primary/10" },
-              { title: "분석왕 랭킹 보상", points: "+1,000~20,000P", desc: "주간·월간 분석왕 랭킹 상위 입상 시 지급", color: "text-green-400", bg: "bg-green-400/10" },
+              { title: "회원가입 불필요", points: "🔓", desc: "누구나 로그인 없이 바로 모든 분석글을 볼 수 있습니다", color: "text-blue-400", bg: "bg-blue-400/10" },
+              { title: "전체 무료 열람", points: "📖", desc: "20명 분석가의 모든 분석글을 제한 없이 자유롭게 읽을 수 있습니다", color: "text-primary", bg: "bg-primary/10" },
+              { title: "광고로만 운영", points: "📣", desc: "결제 없이, 페이지 배너와 이탈 시 전면광고로만 서비스를 운영합니다", color: "text-green-400", bg: "bg-green-400/10" },
             ].map((item) => (
               <div key={item.title} className={`p-5 rounded-2xl border border-border ${item.bg}`}>
                 <div className={`text-2xl font-bold ${item.color} mb-2`}>{item.points}</div>
@@ -306,13 +293,12 @@ export default function Home() {
         </div>
       </section>
 
-      {/* User Ranking & Events */}
+      {/* Bot Champion */}
       <section className="py-12 border-t border-border">
         <div className="container">
           <Tabs defaultValue="ranking" className="w-full">
-            <TabsList className="grid w-full grid-cols-2 mb-6">
+            <TabsList className="grid w-full grid-cols-1 mb-6">
               <TabsTrigger value="ranking">🏆 지난주·지난달 분석왕</TabsTrigger>
-              <TabsTrigger value="events">🎁 진행 중인 이벤트</TabsTrigger>
             </TabsList>
 
             {/* Bot Champion (2026: 유저 랭킹 폐지, AI 분석가 랭킹 배지로 대체 — 포인트 상금 없음) */}
@@ -338,92 +324,15 @@ export default function Home() {
                 <div className="text-center py-8 text-muted-foreground">아직 집계된 분석왕이 없습니다.</div>
               )}
             </TabsContent>
-
-            {/* Events */}
-            <TabsContent value="events" className="space-y-3">
-              {activeEvents && activeEvents.length > 0 ? (
-                <div className="space-y-3">
-                  {activeEvents.map((event: any) => (
-                    <div key={event.id} className="p-4 rounded-lg bg-gradient-to-r from-primary/10 to-primary/5 border border-primary/30">
-                      <div className="flex items-start justify-between mb-2">
-                        <div>
-                          <h3 className="font-bold text-lg">{event.title}</h3>
-                          <p className="text-sm text-muted-foreground mt-1">{event.description}</p>
-                        </div>
-                        <Badge className="bg-primary">진행 중</Badge>
-                      </div>
-                      {event.prizes && (
-                        <div className="mt-3 pt-3 border-t border-primary/20">
-                          <div className="text-xs font-semibold text-primary mb-2">상금 정보</div>
-                          <div className="grid grid-cols-3 gap-2">
-                            {event.prizes.slice(0, 3).map((prize: any, idx: number) => (
-                              <div key={idx} className="text-xs bg-white/5 rounded p-2">
-                                <div className="font-bold text-primary">{prize.rank}위</div>
-                                <div className="text-muted-foreground">{prize.description}</div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              ) : upcomingEvents && upcomingEvents.length > 0 ? (
-                <div className="space-y-3">
-                  <div className="text-center py-8 text-muted-foreground mb-4">현재 진행 중인 이벤트가 없습니다.</div>
-                  <div>
-                    <h3 className="font-bold mb-3 text-sm">예정된 이벤트</h3>
-                    {upcomingEvents.map((event: any) => (
-                      <div key={event.id} className="p-3 rounded-lg bg-card border border-border text-sm mb-2">
-                        <div className="font-semibold">{event.title}</div>
-                        <div className="text-xs text-muted-foreground mt-1">
-                          {new Date(event.startDate).toLocaleDateString('ko-KR')} 시작
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div className="text-center py-8 text-muted-foreground">이벤트 정보가 없습니다.</div>
-              )}
-            </TabsContent>
           </Tabs>
-        </div>
-      </section>
-
-      {/* Exchange Preview */}
-      <section className="py-12 border-t border-border bg-card/30">
-        <div className="container">
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h2 className="text-2xl font-bold">포인트 교환소</h2>
-              <p className="text-muted-foreground text-sm mt-1">적립된 포인트를 실생활에서 사용하세요</p>
-            </div>
-            <Link href="/exchange">
-              <Button variant="ghost" size="sm" className="text-primary">교환하기 <ChevronRight className="w-4 h-4 ml-1" /></Button>
-            </Link>
-          </div>
-          <div className="grid grid-cols-3 gap-4 max-w-md">
-            {[
-              { name: "네이버페이", emoji: "🟢", desc: "1,000P~" },
-              { name: "카카오페이", emoji: "🟡", desc: "1,000P~" },
-              { name: "모바일 상품권", emoji: "🎁", desc: "5,000P~" },
-            ].map((item) => (
-              <div key={item.name} className="p-4 rounded-xl bg-card border border-border text-center card-hover">
-                <div className="text-3xl mb-2">{item.emoji}</div>
-                <div className="text-sm font-semibold">{item.name}</div>
-                <div className="text-xs text-muted-foreground mt-1">{item.desc}</div>
-              </div>
-            ))}
-          </div>
         </div>
       </section>
 
       {/* Footer */}
       <footer className="border-t border-border py-8">
         <div className="container text-center text-sm text-muted-foreground">
-          <p className="mb-2">분석왕은 무상 포인트 기반 스포츠 분석 커뮤니티 서비스입니다.</p>
-          <p>포인트는 현금 충전이 불가하며, 서비스 이용 수단으로만 제공됩니다.</p>
+          <p className="mb-2">분석왕은 회원가입 없이 누구나 무료로 이용할 수 있는 스포츠 분석 콘텐츠 서비스입니다.</p>
+          <p>모든 서비스는 광고 수익만으로 운영되며, 유료 결제나 포인트 제도는 없습니다.</p>
           <p className="mt-4 text-xs">© 2026 분석왕. All rights reserved.</p>
         </div>
       </footer>

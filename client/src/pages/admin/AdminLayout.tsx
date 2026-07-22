@@ -1,8 +1,11 @@
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
-import { LayoutDashboard, Trophy, Calendar, CheckCircle, Gift, Users, Settings, Zap, ChevronRight } from "lucide-react";
+import { trpc } from "@/lib/trpc";
+import { toast } from "sonner";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { LayoutDashboard, Trophy, Calendar, CheckCircle, Users, Settings, Zap, ChevronRight } from "lucide-react";
 
 const adminNav = [
   { href: "/admin", label: "대시보드", icon: LayoutDashboard },
@@ -10,9 +13,37 @@ const adminNav = [
   { href: "/admin/matches", label: "경기 등록", icon: Calendar },
   { href: "/admin/bots", label: "AI 봇 관리", icon: Trophy },
   { href: "/admin/settle", label: "결과 입력·정산", icon: CheckCircle },
-  { href: "/admin/exchange", label: "교환소 관리", icon: Gift },
-  { href: "/admin/users", label: "회원 관리", icon: Users },
+  { href: "/admin/users", label: "관리자 계정 관리", icon: Users },
 ];
+
+function AdminLoginForm() {
+  const utils = trpc.useUtils();
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const login = trpc.auth.login.useMutation({
+    onSuccess: () => { utils.auth.me.invalidate(); },
+    onError: (e) => toast.error(e.message),
+  });
+
+  return (
+    <div className="min-h-screen bg-background flex items-center justify-center">
+      <form
+        onSubmit={(e) => { e.preventDefault(); login.mutate({ username, password }); }}
+        className="w-full max-w-sm p-6 rounded-xl border border-border bg-card space-y-4"
+      >
+        <div className="text-center mb-2">
+          <div className="w-10 h-10 rounded-lg gold-gradient flex items-center justify-center mx-auto mb-2"><Zap className="w-5 h-5 text-black" /></div>
+          <h1 className="font-bold text-lg">관리자 로그인</h1>
+        </div>
+        <Input placeholder="아이디" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
+        <Input type="password" placeholder="비밀번호" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+        <Button type="submit" className="w-full gold-gradient text-black font-bold" disabled={login.isPending}>
+          {login.isPending ? "로그인 중..." : "로그인"}
+        </Button>
+      </form>
+    </div>
+  );
+}
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
   const [location] = useLocation();
@@ -24,23 +55,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
     </div>
   );
 
-  if (!isAuthenticated) return (
-    <div className="min-h-screen bg-background flex items-center justify-center">
-      <div className="text-center">
-        <p className="text-muted-foreground mb-4">로그인이 필요합니다.</p>
-        <button className="px-4 py-2 rounded-lg gold-gradient text-black font-semibold" onClick={() => window.location.href = getLoginUrl()}>로그인</button>
-      </div>
-    </div>
-  );
-
-  if (user?.role !== "admin") return (
-    <div className="min-h-screen bg-background flex items-center justify-center">
-      <div className="text-center">
-        <p className="text-muted-foreground mb-4">관리자 권한이 필요합니다.</p>
-        <Link href="/"><button className="px-4 py-2 rounded-lg bg-accent text-foreground">홈으로</button></Link>
-      </div>
-    </div>
-  );
+  if (!isAuthenticated) return <AdminLoginForm />;
 
   return (
     <div className="min-h-screen bg-background flex">
@@ -68,15 +83,29 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
             );
           })}
         </nav>
-        <div className="p-3 border-t border-sidebar-border">
+        <div className="p-3 border-t border-sidebar-border space-y-1">
           <Link href="/">
             <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-all">
               ← 사용자 화면으로
             </button>
           </Link>
+          <AdminLogoutButton />
         </div>
       </aside>
       <main className="flex-1 overflow-auto">{children}</main>
     </div>
+  );
+}
+
+function AdminLogoutButton() {
+  const utils = trpc.useUtils();
+  const logout = trpc.auth.logout.useMutation({ onSuccess: () => utils.auth.me.invalidate() });
+  return (
+    <button
+      onClick={() => logout.mutate()}
+      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-destructive/80 hover:text-destructive hover:bg-destructive/10 transition-all"
+    >
+      로그아웃
+    </button>
   );
 }

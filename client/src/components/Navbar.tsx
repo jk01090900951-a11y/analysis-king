@@ -1,28 +1,19 @@
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
-import { useAuth } from "@/_core/hooks/useAuth";
-import { getLoginUrl } from "@/const";
-import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
-import { Menu, Trophy, Zap, Home, BarChart2, Gift, User, Settings, LogOut, Search } from "lucide-react";
+import { Menu, Trophy, Zap, Home, BarChart2, Settings, Search } from "lucide-react";
 
 const navLinks = [
   { href: "/", label: "홈", icon: Home },
-  { href: "/matches", label: "경기 예측", icon: BarChart2 },
+  { href: "/matches", label: "경기 분석", icon: BarChart2 },
   { href: "/bots", label: "분석가 랭킹", icon: Trophy },
-  { href: "/exchange", label: "교환소", icon: Gift },
 ];
 
 export default function Navbar() {
   const [location] = useLocation();
-  const { user, isAuthenticated, logout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const { data: balance } = trpc.point.balance.useQuery(undefined, { enabled: isAuthenticated });
-  const logoutMutation = trpc.auth.logout.useMutation({ onSuccess: () => logout() });
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,63 +58,13 @@ export default function Navbar() {
           </div>
         </form>
 
-        {/* Right Side */}
-        <div className="flex items-center gap-3">
-          {isAuthenticated ? (
-            <>
-              <Link href="/mypage">
-                <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20 cursor-pointer hover:bg-primary/20 transition-colors">
-                  <Zap className="w-3.5 h-3.5 text-primary" />
-                  <span className="text-sm font-semibold text-primary">{(balance?.points ?? 0).toLocaleString()}P</span>
-                </div>
-              </Link>
-
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Avatar className="w-9 h-9 cursor-pointer ring-2 ring-border hover:ring-primary transition-all">
-                    <AvatarFallback className="bg-primary/20 text-primary text-sm font-semibold">
-                      {user?.name?.[0] ?? "U"}
-                    </AvatarFallback>
-                  </Avatar>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-48">
-                  <div className="px-3 py-2">
-                    <p className="text-sm font-medium">{user?.name ?? "사용자"}</p>
-                    <p className="text-xs text-muted-foreground">{(balance?.points ?? 0).toLocaleString()}P 보유</p>
-                  </div>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem asChild>
-                    <Link href="/mypage" className="flex items-center gap-2 cursor-pointer w-full">
-                      <User className="w-4 h-4" />마이페이지
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link href="/exchange" className="flex items-center gap-2 cursor-pointer w-full">
-                      <Gift className="w-4 h-4" />포인트 교환
-                    </Link>
-                  </DropdownMenuItem>
-                  {user?.role === "admin" && (
-                    <>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem asChild>
-                        <Link href="/admin" className="flex items-center gap-2 cursor-pointer w-full">
-                          <Settings className="w-4 h-4" />관리자
-                        </Link>
-                      </DropdownMenuItem>
-                    </>
-                  )}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => logoutMutation.mutate()} className="text-destructive cursor-pointer">
-                    <LogOut className="w-4 h-4 mr-2" />로그아웃
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </>
-          ) : (
-            <Button size="sm" className="gold-gradient text-black font-semibold hover:opacity-90" onClick={() => window.location.href = getLoginUrl()}>
-              로그인
+        {/* Right Side — 2026: 회원가입 폐지로 로그인/포인트 UI 전부 제거. 관리자 전용 아이콘만 남김. */}
+        <div className="flex items-center gap-2">
+          <Link href="/admin">
+            <Button variant="ghost" size="icon" title="관리자" className="text-muted-foreground/50 hover:text-muted-foreground">
+              <Settings className="w-4 h-4" />
             </Button>
-          )}
+          </Link>
 
           <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
             <SheetTrigger asChild>
@@ -140,16 +81,6 @@ export default function Navbar() {
                     </button>
                   </Link>
                 ))}
-                {isAuthenticated && (
-                  <>
-                    <div className="border-t border-border my-2" />
-                    <Link href="/mypage" onClick={() => setMobileOpen(false)}>
-                      <button className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-all">
-                        <User className="w-4 h-4" />마이페이지
-                      </button>
-                    </Link>
-                  </>
-                )}
               </div>
             </SheetContent>
           </Sheet>

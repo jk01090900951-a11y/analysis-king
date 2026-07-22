@@ -1,20 +1,18 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { and, eq, desc, gte, lte, sql, isNull } from "drizzle-orm";
-import { getDb, upsertUser, getUserByOpenId, getAllUsers, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getAllBots, getBotById, getBotPicksForMatch, getUserPredictionForMatch, getUserPredictions, getMatchPredictionStats, getUserPointHistory, addPointHistory, getExchangeMethods, getAllExchangeMethods, getUserExchangeRequests, getAllExchangeRequests, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, getActiveEvents, getUpcomingEvents, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow } from "./db";
-import { users, sports, leagues, matches, aiBots, botPicks, userPredictions, pointHistory, exchangeMethods, exchangeRequests, matchAnalysis, headToHead, events, analysisViews, systemSettings, botChampionHistory, reports, comments, adLog, adFreeSession } from "../drizzle/schema";
+import { getDb, verifyLogin, getAllUsers, createAdmin, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getAllBots, getBotById, getBotPicksForMatch, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow } from "./db";
+import { users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory } from "../drizzle/schema";
 import { storagePut } from "./storage";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import { protectedProcedure, adminProcedure, publicProcedure, router } from "./_core/trpc";
 import { invokeLLM } from "./_core/llm";
+import jwt from "jsonwebtoken";
+import { ENV } from "./_core/env";
 // 2026 삭제된 import: getUserRanking, getUserAnalysisList (유저 분석글/랭킹 폐지), userAnalysis, adWatchLog 테이블
-
-const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
-  if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN", message: "관리자 권한이 필요합니다." });
-  return next({ ctx });
-});
+// 2026: 카카오 로그인 폐지로 upsertUser/getUserByOpenId 대신 아이디비번 인증 함수(verifyLogin 등) 사용
 
 // ══════════════════════════════════════════════════════════════════════════
 // API-Sports 원본 응답(apiData) → 우리 내부 형식 변환 어댑터
@@ -43,6 +41,16 @@ export const appRouter = router({
 
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
+    login: publicProcedure
+      .input(z.object({ username: z.string().min(1), password: z.string().min(1) }))
+      .mutation(async ({ ctx, input }) => {
+        const user = await verifyLogin(input.username, input.password);
+        if (!user) throw new TRPCError({ code: "UNAUTHORIZED", message: "아이디 또는 비밀번호가 올바르지 않습니다." });
+        const token = jwt.sign({ userId: user.id }, ENV.JWT_SECRET, { expiresIn: "30d" });
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.cookie(COOKIE_NAME, token, cookieOptions);
+        return { success: true } as const;
+      }),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
@@ -111,7 +119,6 @@ export const appRouter = router({
       .query(({ input }) => getMatches(input ?? {})),
     get: publicProcedure.input(z.object({ id: z.number() })).query(({ input }) => getMatchById(input.id)),
     getById: publicProcedure.input(z.object({ id: z.number() })).query(({ input }) => getMatchById(input.id)),
-    predictionStats: publicProcedure.input(z.object({ matchId: z.number() })).query(({ input }) => getMatchPredictionStats(input.matchId)),
 
     create: adminProcedure
       .input(z.object({
@@ -226,51 +233,13 @@ export const appRouter = router({
           await db.update(aiBots).set({ currentRank: i + 1 }).where(eq(aiBots.id, sorted[i]!.id));
         }
 
-        // 사용자 예측 정산 (2026: 배팅풀 방식 폐지 — 오답률 연동 고정 보너스, 회사 재원)
-        const allUserPreds = await db.select().from(userPredictions).where(and(eq(userPredictions.matchId, input.matchId), eq(userPredictions.isSettled, false)));
-        const correctPreds = allUserPreds.filter(p => {
-          if (p.pickType === "win_draw_lose") return p.wdlChoice === result;
-          if (p.pickType === "under_over") return p.ouChoice === ouResult;
-          return false;
-        });
-        const incorrectPreds = allUserPreds.filter(p => !correctPreds.includes(p));
-        const wrongRate = allUserPreds.length > 0 ? incorrectPreds.length / allUserPreds.length : 0;
-        // V3.0 정책 14절: 오답률 50%미만=0P, 50~70%=10P, 70~90%=20P, 90%+=30P (배팅 아닌 회사 재원 보너스)
-        const bonusForWrongRate = wrongRate >= 0.9 ? 30 : wrongRate >= 0.7 ? 20 : wrongRate >= 0.5 ? 10 : 0;
-
-        for (const pred of allUserPreds) {
-          const isCorrect = correctPreds.includes(pred);
-          const basePointsEarned = pred.basePointsEarned || 10; // submit 시 이미 지급된 기본 참여 포인트(중복 지급 방지)
-          const bonusPointsEarned = isCorrect ? bonusForWrongRate : 0;
-
-          await db.update(userPredictions).set({ isCorrect, bonusPointsEarned, isSettled: true, resultRevealedAt: new Date() }).where(eq(userPredictions.id, pred.id));
-
-          if (bonusPointsEarned > 0) {
-            const userRow = await db.select().from(users).where(eq(users.id, pred.userId)).limit(1);
-            if (userRow[0]) {
-              const newBalance = userRow[0].points + bonusPointsEarned;
-              const newCorrect = userRow[0].correctCount + 1;
-              await db.update(users).set({ points: newBalance, totalEarned: userRow[0].totalEarned + bonusPointsEarned, correctCount: newCorrect }).where(eq(users.id, pred.userId));
-              await addPointHistory(pred.userId, "earn_correct", bonusPointsEarned, newBalance, `정답 보너스 (오답률 ${(wrongRate * 100).toFixed(0)}%)`, pred.id);
-            }
-          } else if (isCorrect) {
-            const userRow = await db.select().from(users).where(eq(users.id, pred.userId)).limit(1);
-            if (userRow[0]) {
-              const newCorrect = userRow[0].correctCount + 1;
-              await db.update(users).set({ correctCount: newCorrect }).where(eq(users.id, pred.userId));
-            }
-          }
-        }
-
-        // 경기 집계 캐시 및 정산 상태 갱신 (AdminSettle.tsx 표시용)
+        // 경기 정산 상태 갱신 (AdminSettle.tsx 표시용) — 2026: 개인 예측/포인트 정산 폐지, 봇 승률만 갱신
         await db.update(matches).set({
           settleStatus: "settled",
           settledAt: new Date(),
-          predictionCount: allUserPreds.length,
-          wrongCount: incorrectPreds.length,
         }).where(eq(matches.id, input.matchId));
 
-        return { success: true, result, ouResult, correctCount: correctPreds.length, incorrectCount: incorrectPreds.length, bonusForWrongRate };
+        return { success: true, result, ouResult };
       }),
   }),
 
@@ -552,152 +521,17 @@ export const appRouter = router({
       return { success: true, targetCount: upcomingMajor.length, note: "TODO: generate 로직 공용 함수 추출 후 연결" };
     }),
 
-    // 분석글 조회 기록 + 유효조회 판정 + 포인트 지급 (2026: 포인트 지급의 사실상 유일한 상시 경로)
-    trackView: protectedProcedure
-      .input(z.object({ analysisId: z.number(), dwellSeconds: z.number().min(0) }))
-      .mutation(async ({ ctx, input }) => {
+    // 2026: 조회 포인트 제도 폐지 — 단순 인기도 카운트만 유지 (로그인 불필요, 부정방지 로직 불필요)
+    incrementView: publicProcedure
+      .input(z.object({ matchId: z.number() }))
+      .mutation(async ({ input }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const isValid = input.dwellSeconds >= 30;
-        if (!isValid) return { success: true, pointsAwarded: 0, reason: "체류시간 30초 미만" };
-
-        // 동일 회원 24시간 내 중복 조회 제외
-        const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-        const dup = await db.select().from(analysisViews).where(and(eq(analysisViews.userId, ctx.user.id), eq(analysisViews.analysisId, input.analysisId), eq(analysisViews.isValid, true), gte(analysisViews.viewedAt, since))).limit(1);
-        if (dup.length > 0) return { success: true, pointsAwarded: 0, reason: "24시간 내 재조회" };
-
-        const setting = await db.select().from(systemSettings).where(eq(systemSettings.key, "point.view_amount")).limit(1);
-        const viewPoints = Number(setting[0]?.value ?? 1);
-
-        await db.insert(analysisViews).values({ userId: ctx.user.id, analysisId: input.analysisId, dwellSeconds: input.dwellSeconds, isValid: true, pointsAwarded: viewPoints });
-
-        const user = await db.select().from(users).where(eq(users.id, ctx.user.id)).limit(1);
-        if (user[0]) {
-          const newBalance = user[0].points + viewPoints;
-          await db.update(users).set({ points: newBalance, totalEarned: user[0].totalEarned + viewPoints }).where(eq(users.id, ctx.user.id));
-          await addPointHistory(ctx.user.id, "earn_view", viewPoints, newBalance, "분석글 조회", input.analysisId);
-        }
-        return { success: true, pointsAwarded: viewPoints };
+        await db.update(matches).set({ viewCount: sql`${matches.viewCount} + 1` }).where(eq(matches.id, input.matchId));
+        return { success: true };
       }),
   }),
 
   // ─── User Predictions ─────────────────────────────────────────────────────
-  prediction: router({
-    myList: protectedProcedure.query(({ ctx }) => getUserPredictions(ctx.user.id)),
-    myPrediction: protectedProcedure.input(z.object({ matchId: z.number() })).query(({ ctx, input }) => getUserPredictionForMatch(ctx.user.id, input.matchId)),
-    mine: protectedProcedure.input(z.object({ matchId: z.number() })).query(({ ctx, input }) => getUserPredictionForMatch(ctx.user.id, input.matchId)),
-    stats: publicProcedure.input(z.object({ matchId: z.number() })).query(({ input }) => getMatchPredictionStats(input.matchId)),
-    submit: protectedProcedure
-      .input(z.object({ matchId: z.number(), pick: z.enum(["home", "draw", "away", "over", "under"]), pickType: z.enum(["win_draw_lose", "under_over"]).default("win_draw_lose") }))
-      .mutation(async ({ ctx, input }) => {
-        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const match = await getMatchById(input.matchId);
-        if (!match) throw new TRPCError({ code: "NOT_FOUND" });
-        if (match.status !== "scheduled" && match.status !== "live") throw new TRPCError({ code: "BAD_REQUEST", message: "현재 참여 가능한 경기가 아닙니다." });
-        const existing = await getUserPredictionForMatch(ctx.user.id, input.matchId);
-        if (existing) throw new TRPCError({ code: "BAD_REQUEST", message: "이미 참여한 경기입니다." });
-        const user = await db.select().from(users).where(eq(users.id, ctx.user.id)).limit(1);
-        if (!user[0]) throw new TRPCError({ code: "NOT_FOUND" });
-        const basePoints = 10;
-        const newBalance = user[0].points + basePoints;
-        await db.update(users).set({ points: newBalance, totalEarned: user[0].totalEarned + basePoints, predictionCount: user[0].predictionCount + 1 }).where(eq(users.id, ctx.user.id));
-        await addPointHistory(ctx.user.id, "earn_base", basePoints, newBalance, "예측 참여 기본 포인트", input.matchId);
-        const wdlChoice = input.pickType === "win_draw_lose" ? (input.pick as "home" | "draw" | "away") : undefined;
-        const ouChoice = input.pickType === "under_over" ? (input.pick as "over" | "under") : undefined;
-        await db.insert(userPredictions).values({ userId: ctx.user.id, matchId: input.matchId, pickType: input.pickType, wdlChoice, ouChoice, basePointsEarned: basePoints });
-        return { success: true, newBalance, pointsEarned: basePoints };
-      }),
-  }),
-
-  // ─── Points ───────────────────────────────────────────────────────────────
-  point: router({
-    history: protectedProcedure.query(({ ctx }) => getUserPointHistory(ctx.user.id)),
-    balance: protectedProcedure.query(async ({ ctx }) => {
-      const db = await getDb(); if (!db) return { points: 0, totalEarned: 0, totalSpent: 0, predictionCount: 0, correctCount: 0 };
-      const result = await db.select({ points: users.points, totalEarned: users.totalEarned, totalSpent: users.totalSpent, predictionCount: users.predictionCount, correctCount: users.correctCount }).from(users).where(eq(users.id, ctx.user.id)).limit(1);
-      return result[0] ?? { points: 0, totalEarned: 0, totalSpent: 0, predictionCount: 0, correctCount: 0 };
-    }),
-    dailyBonus: protectedProcedure.mutation(async () => {
-      // 2026 정책: 출석체크/일일보너스는 공식 포인트 지급 사유(11.1절)에 없어 폐지.
-      // 프론트엔드(MyPage.tsx)에서도 이 버튼을 제거해야 함.
-      throw new TRPCError({ code: "BAD_REQUEST", message: "출석 체크 보너스는 더 이상 제공되지 않습니다." });
-    }),
-  }),
-
-  // ─── Exchange ─────────────────────────────────────────────────────────────
-  exchange: router({
-    methods: publicProcedure.query(() => getExchangeMethods()),
-    myRequests: protectedProcedure.query(({ ctx }) => getUserExchangeRequests(ctx.user.id)),
-
-    request: protectedProcedure
-      .input(z.object({ methodId: z.number(), points: z.number().min(1), accountInfo: z.string().optional() }))
-      .mutation(async ({ ctx, input }) => {
-        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const method = await db.select().from(exchangeMethods).where(eq(exchangeMethods.id, input.methodId)).limit(1);
-        if (!method[0] || !method[0].isActive) throw new TRPCError({ code: "NOT_FOUND" });
-        if (input.points < method[0].minPoints || input.points > method[0].maxPoints) throw new TRPCError({ code: "BAD_REQUEST", message: `교환 포인트는 ${method[0].minPoints}~${method[0].maxPoints} 사이여야 합니다.` });
-        const unit = method[0].unitPoints ?? 1000;
-        if (input.points % unit !== 0) throw new TRPCError({ code: "BAD_REQUEST", message: `교환 신청은 ${unit}P 단위로만 가능합니다. (예: 16,500P 보유 시 16,000P까지만 신청 가능, 잔여분은 계정에 남습니다)` });
-
-        const user = await db.select().from(users).where(eq(users.id, ctx.user.id)).limit(1);
-        if (!user[0] || user[0].points < input.points) throw new TRPCError({ code: "BAD_REQUEST", message: "포인트가 부족합니다." });
-
-        const amount = (input.points * Number(method[0].conversionRate)).toFixed(2);
-        const newBalance = user[0].points - input.points;
-        await db.update(users).set({ points: newBalance, totalSpent: user[0].totalSpent + input.points }).where(eq(users.id, ctx.user.id));
-        await db.insert(exchangeRequests).values({ userId: ctx.user.id, methodId: input.methodId, points: input.points, amount, accountInfo: input.accountInfo });
-        await addPointHistory(ctx.user.id, "spend_exchange", -input.points, newBalance, `[${method[0].name}] 포인트 교환`);
-        return { success: true, newBalance };
-      }),
-
-    // 사용자가 신청 가능한 최대 포인트 계산 (프론트 UI 도우미 — floor(보유/1000)*1000)
-    maxRequestable: protectedProcedure.input(z.object({ methodId: z.number() })).query(async ({ ctx, input }) => {
-      const db = await getDb(); if (!db) return { max: 0, remainder: 0 };
-      const [user, method] = await Promise.all([
-        db.select().from(users).where(eq(users.id, ctx.user.id)).limit(1),
-        db.select().from(exchangeMethods).where(eq(exchangeMethods.id, input.methodId)).limit(1),
-      ]);
-      const balance = user[0]?.points ?? 0;
-      const unit = method[0]?.unitPoints ?? 1000;
-      const max = Math.floor(balance / unit) * unit;
-      return { max, remainder: balance - max, balance };
-    }),
-
-    allMethods: adminProcedure.query(() => getAllExchangeMethods()),
-    allRequests: adminProcedure.query(() => getAllExchangeRequests()),
-
-    createMethod: adminProcedure
-      .input(z.object({ name: z.string().min(1), type: z.enum(["naverpay", "kakaopay", "gift_card", "custom"]), description: z.string().optional(), logoUrl: z.string().optional(), minPoints: z.number().default(1000), maxPoints: z.number().default(100000), conversionRate: z.string().default("1.0000"), sortOrder: z.number().default(0) }))
-      .mutation(async ({ input }) => {
-        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db.insert(exchangeMethods).values(input);
-        return { success: true };
-      }),
-    updateMethod: adminProcedure
-      .input(z.object({ id: z.number(), name: z.string().optional(), description: z.string().optional(), minPoints: z.number().optional(), maxPoints: z.number().optional(), conversionRate: z.string().optional(), isActive: z.boolean().optional(), sortOrder: z.number().optional() }))
-      .mutation(async ({ input }) => {
-        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const { id, ...rest } = input;
-        await db.update(exchangeMethods).set(rest).where(eq(exchangeMethods.id, id));
-        return { success: true };
-      }),
-    updateRequestStatus: adminProcedure
-      .input(z.object({ id: z.number(), status: z.enum(["pending", "processing", "completed", "rejected"]), adminNote: z.string().optional() }))
-      .mutation(async ({ input }) => {
-        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db.update(exchangeRequests).set({ status: input.status, adminNote: input.adminNote }).where(eq(exchangeRequests.id, input.id));
-        return { success: true };
-      }),
-    deleteMethod: adminProcedure
-      .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db.update(exchangeMethods).set({ isActive: false }).where(eq(exchangeMethods.id, input.id));
-        return { success: true };
-      }),
-  }),
-
-  // ─── Admin ────────────────────────────────────────────────────────────────
-  // ─── Bot Profile ─────────────────────────────────────────────────────────────
   botProfile: router({
     get: publicProcedure.input(z.object({ botId: z.number() })).query(({ input }) => getBotProfile(input.botId)),
     recentPicks: publicProcedure.input(z.object({ botId: z.number() })).query(({ input }) => getBotRecentPicks(input.botId)),
@@ -730,19 +564,22 @@ export const appRouter = router({
   }),
 
   // ─── Events ───────────────────────────────────────────────────────────────────
-  event: router({
-    activeEvents: publicProcedure.query(() => getActiveEvents()),
-    upcomingEvents: publicProcedure.input(z.object({ limit: z.number().default(3) })).query(({ input }) => getUpcomingEvents(input.limit)),
-  }),
-
   admin: router({
     stats: adminProcedure.query(() => getAdminStats()),
     users: adminProcedure.query(() => getAllUsers()),
-    updateUserRole: adminProcedure
-      .input(z.object({ userId: z.number(), role: z.enum(["user", "admin"]) }))
-      .mutation(async ({ input }) => {
+    // 2026: role이 admin 단일값이라 승격/강등 개념 없음 — 관리자 계정 삭제(접근 회수)만 제공
+    removeAdmin: adminProcedure
+      .input(z.object({ userId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        await db.update(users).set({ role: input.role }).where(eq(users.id, input.userId));
+        if (input.userId === ctx.user.id) throw new TRPCError({ code: "BAD_REQUEST", message: "본인 계정은 삭제할 수 없습니다." });
+        await db.delete(users).where(eq(users.id, input.userId));
+        return { success: true };
+      }),
+    createAdmin: adminProcedure
+      .input(z.object({ username: z.string().min(3), password: z.string().min(8), name: z.string().optional() }))
+      .mutation(async ({ input }) => {
+        await createAdmin(input.username, input.password, input.name);
         return { success: true };
       }),
     deleteMatch: adminProcedure
@@ -753,56 +590,13 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    // AdminUsers.tsx 지원 -----------------------------------------------------
+    // AdminUsers.tsx 지원 (2026: 관리자 계정 목록만 — 일반 회원 없음) ---------
     userList: adminProcedure
-      .input(z.object({ search: z.string().optional(), role: z.enum(["user", "admin"]).optional() }).optional())
+      .input(z.object({ search: z.string().optional() }).optional())
       .query(async ({ input }) => {
         const db = await getDb(); if (!db) return [];
-        const conds = [];
-        if (input?.role) conds.push(eq(users.role, input.role));
-        // search(닉네임/이메일)는 LIKE 조건 추가 필요 — drizzle의 `like` 임포트 후 적용 권장
-        const rows = await db.select().from(users).where(conds.length ? and(...conds) : undefined).orderBy(desc(users.createdAt)).limit(200);
-        return rows.map((u: any) => ({ ...u, accountStatus: u.accountStatus ?? "active" }));
-      }),
-    userDetail: adminProcedure
-      .input(z.object({ userId: z.number() }))
-      .query(async ({ input }) => {
-        const db = await getDb(); if (!db) return null;
-        const pointHistoryRows = await db.select().from(pointHistory).where(eq(pointHistory.userId, input.userId)).orderBy(desc(pointHistory.createdAt)).limit(50);
-        const viewRows = await db.select({ id: analysisViews.id, viewedAt: analysisViews.viewedAt, analysisId: analysisViews.analysisId })
-          .from(analysisViews).where(eq(analysisViews.userId, input.userId)).orderBy(desc(analysisViews.viewedAt)).limit(50);
-        const reportRows = await db.select().from(reports).where(eq(reports.reporterId, input.userId)).orderBy(desc(reports.createdAt)).limit(50);
-        return {
-          pointHistory: pointHistoryRows,
-          viewHistory: viewRows.map((v: any) => ({ id: v.id, viewedAt: v.viewedAt, matchTitle: `분석글 #${v.analysisId}` })),
-          reportHistory: reportRows,
-        };
-      }),
-    adjustUserPoint: adminProcedure
-      .input(z.object({ userId: z.number(), amount: z.number(), reason: z.string().min(1) }))
-      .mutation(async ({ input }) => {
-        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const user = await db.select().from(users).where(eq(users.id, input.userId)).limit(1);
-        if (!user[0]) throw new TRPCError({ code: "NOT_FOUND" });
-        const newBalance = user[0].points + input.amount;
-        if (newBalance < 0) throw new TRPCError({ code: "BAD_REQUEST", message: "회수 후 잔액이 음수가 될 수 없습니다." });
-        await db.update(users).set({
-          points: newBalance,
-          totalEarned: input.amount > 0 ? user[0].totalEarned + input.amount : user[0].totalEarned,
-          totalSpent: input.amount < 0 ? user[0].totalSpent + Math.abs(input.amount) : user[0].totalSpent,
-        }).where(eq(users.id, input.userId));
-        await addPointHistory(input.userId, input.amount > 0 ? "admin_grant" : "admin_revoke", input.amount, newBalance, input.reason);
-        return { success: true, newBalance };
-      }),
-    updateUserStatus: adminProcedure
-      .input(z.object({ userId: z.number(), status: z.enum(["active", "warned", "restricted", "suspended", "banned"]) }))
-      .mutation(async ({ input }) => {
-        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const expiryDays: Record<string, number | null> = { active: null, warned: 7, restricted: 30, suspended: 90, banned: null };
-        const days = expiryDays[input.status];
-        const statusExpiresAt = days ? new Date(Date.now() + days * 24 * 60 * 60 * 1000) : null;
-        await db.update(users).set({ accountStatus: input.status, statusExpiresAt }).where(eq(users.id, input.userId));
-        return { success: true };
+        const rows = await db.select().from(users).orderBy(desc(users.createdAt)).limit(200);
+        return rows;
       }),
 
     // AdminSettle.tsx 지원 ----------------------------------------------------
@@ -828,17 +622,12 @@ export const appRouter = router({
     seedData: adminProcedure.mutation(async () => {
       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
 
-      // 시스템 설정값 (관리자가 코드 수정 없이 조정 가능한 조건/포인트 값들)
+      // 시스템 설정값 (관리자가 코드 수정 없이 조정 가능한 조건 값들 — 2026: 포인트/예측 제도 폐지로 관련 키 삭제)
       const settingsList = [
-        { key: "point.view_amount", value: "1", description: "분석글 조회 시 지급 포인트" },
-        { key: "predict.base_amount", value: "10", description: "예측 참여 기본 포인트" },
-        { key: "predict.bonus_tier1", value: "10", description: "오답률 50~70% 구간 보너스" },
-        { key: "predict.bonus_tier2", value: "20", description: "오답률 70~90% 구간 보너스" },
-        { key: "predict.bonus_tier3", value: "30", description: "오답률 90%+ 구간 보너스" },
         { key: "ad.interstitial_cooldown_sec", value: "300", description: "전면광고 재노출 쿨다운(초)" },
         { key: "ad.interstitial_max_per_hour", value: "6", description: "시간당 전면광고 최대 노출" },
-        { key: "ad.rewarded_optout_hours", value: "1.5", description: "리워드광고 시청 후 광고면제 시간" },
-        // 야구 투수 피로도 점수제 임계값 (2026 신규 — 앞으로 조건 추가/조정은 이 표에 행만 추가하면 됨)
+        { key: "ad.rewarded_optout_hours", value: "1.5", description: "리워드광고 시청 후 광고면제 시간 (브라우저 쿠키 기반, 로그인 불필요)" },
+        // 야구 투수 피로도 점수제 임계값 (앞으로 조건 추가/조정은 이 표에 행만 추가하면 됨)
         { key: "fatigue.heavy_pitch_count", value: "90", description: "이 투구수 이상이면 과부하(-2점)" },
         { key: "fatigue.heavy_innings", value: "7", description: "이 이닝 이상이면 과부하(-2점)" },
         { key: "fatigue.light_pitch_count", value: "70", description: "이 투구수 미만이면 조기강판(+2점)" },
@@ -919,17 +708,6 @@ export const appRouter = router({
       for (const b of botList) {
         const ex = await db.select().from(aiBots).where(eq(aiBots.name, b.name)).limit(1);
         if (ex.length === 0) await db.insert(aiBots).values(b);
-      }
-
-      // 교환 수단
-      const methodList = [
-        { name: "네이버페이", type: "naverpay" as const, description: "네이버페이 포인트로 전환", minPoints: 1000, maxPoints: 50000, conversionRate: "1.0000", sortOrder: 1 },
-        { name: "카카오페이", type: "kakaopay" as const, description: "카카오페이 포인트로 전환", minPoints: 1000, maxPoints: 50000, conversionRate: "1.0000", sortOrder: 2 },
-        { name: "모바일 상품권", type: "gift_card" as const, description: "모바일 상품권 (편의점, 커피 등)", minPoints: 5000, maxPoints: 100000, conversionRate: "1.0000", sortOrder: 3 },
-      ];
-      for (const m of methodList) {
-        const ex = await db.select().from(exchangeMethods).where(eq(exchangeMethods.name, m.name)).limit(1);
-        if (ex.length === 0) await db.insert(exchangeMethods).values(m);
       }
 
       return { success: true, message: "초기 데이터 시딩 완료" };

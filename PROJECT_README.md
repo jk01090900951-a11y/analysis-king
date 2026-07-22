@@ -8,7 +8,7 @@
 ```bash
 npm install
 cp .env.example .env
-# .env 파일을 열어서 DATABASE_URL, API_SPORTS_KEY, OPENAI_API_KEY, KAKAO_* 값을 채우세요
+# .env 파일을 열어서 DATABASE_URL, API_SPORTS_KEY, ANTHROPIC_API_KEY, KAKAO_* 값을 채우세요
 npm run db:push       # DB 스키마 반영 (MySQL 서버가 미리 켜져 있어야 함)
 npm run dev            # http://localhost:5173 에서 확인
 ```
