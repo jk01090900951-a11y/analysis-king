@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import bcrypt from "bcryptjs";
 import { InsertUser, users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory, pitcherStartHistory, playerAppearanceLog } from "../drizzle/schema";
 import { ENV } from './_core/env';
-import { fetchUpcomingFixtures } from './_core/apiSports';
+import { fetchUpcomingFixtures, ApiFootballFixture } from './_core/apiSports';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -376,13 +376,21 @@ export async function syncFootballFixturesForLeague(leagueId: number, season: nu
   if (!league) throw new Error("리그를 찾을 수 없습니다.");
   if (!league.externalLeagueId) throw new Error("이 리그에 API-Sports 리그ID(externalLeagueId)가 설정되어 있지 않습니다. 종목·리그 관리에서 먼저 입력하세요.");
 
-  // 시즌 표기 관례가 리그마다 다름(유럽=8월시작연도, K리그=실제연도) → 올해로 먼저 시도, 0건이면 작년도 시도
-  let fixtures = await fetchUpcomingFixtures(league.externalLeagueId, season, 30);
+  // 시즌 표기 관례가 리그마다 다름(유럽=8월시작연도, K리그·MLS=실제연도) → 올해로 먼저 시도, 0건이면 작년도 시도
+  // API가 errors를 돌려주면(플랜 제한 등) 두 시도 다 실패할 텐데, 그 경우 마지막 에러 메시지를 그대로 보여줌
+  let fixtures: ApiFootballFixture[] = [];
   let usedSeason = season;
-  if (fixtures.length === 0) {
-    fixtures = await fetchUpcomingFixtures(league.externalLeagueId, season - 1, 30);
-    usedSeason = season - 1;
+  let lastError: Error | null = null;
+  for (const trySeason of [season, season - 1]) {
+    try {
+      fixtures = await fetchUpcomingFixtures(league.externalLeagueId, trySeason, 30);
+      usedSeason = trySeason;
+      if (fixtures.length > 0) break;
+    } catch (err) {
+      lastError = err as Error;
+    }
   }
+  if (fixtures.length === 0 && lastError) throw lastError;
   let created = 0, skipped = 0;
 
   for (const f of fixtures) {

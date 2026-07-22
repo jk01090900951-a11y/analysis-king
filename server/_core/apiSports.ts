@@ -21,7 +21,15 @@ async function apiSportsGet<T = any>(url: string): Promise<T> {
     const text = await res.text().catch(() => "");
     throw new Error(`API-Sports 요청 실패 (${res.status}): ${text.slice(0, 300)}`);
   }
-  return res.json();
+  const data = await res.json();
+  // API-Sports는 HTTP 200이어도 응답 안에 errors를 숨겨서 보내는 경우가 많음
+  // (예: 무료 플랜 제한, 잘못된 파라미터 조합 등) — 이걸 그냥 지나치면 "0건"으로만 보임
+  const errors = data?.errors;
+  if (errors && (Array.isArray(errors) ? errors.length > 0 : Object.keys(errors).length > 0)) {
+    const detail = Array.isArray(errors) ? errors.join(", ") : Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join(", ");
+    throw new Error(`API-Sports 응답 경고: ${detail}`);
+  }
+  return data;
 }
 
 export interface FoundLeague {
