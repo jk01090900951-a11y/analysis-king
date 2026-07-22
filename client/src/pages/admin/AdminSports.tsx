@@ -4,15 +4,22 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Plus, Wifi, RefreshCw } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Plus, Wifi, RefreshCw, Download } from "lucide-react";
 import { toast } from "sonner";
 
 export default function AdminSports() {
   const utils = trpc.useUtils();
   const { data: sports } = trpc.sport.listAdmin.useQuery();
   const { data: leagues } = trpc.sport.allLeagues.useQuery();
+
   const [leagueDialog, setLeagueDialog] = useState(false);
   const [form, setForm] = useState<any>({ tier: "minor" });
+
+  const [importDialog, setImportDialog] = useState(false);
+  const [importSportId, setImportSportId] = useState<number | null>(null);
+  const [importCountry, setImportCountry] = useState<string | null>(null);
+  const [selectedLeagues, setSelectedLeagues] = useState<Record<string, "major" | "minor">>({});
 
   const createLeague = trpc.sport.createLeague.useMutation({
     onSuccess: () => { toast.success("리그 추가 완료"); utils.sport.allLeagues.invalidate(); setLeagueDialog(false); },
@@ -23,9 +30,45 @@ export default function AdminSports() {
     onError: (e) => toast.error(e.message),
   });
   const syncFixtures = trpc.sport.syncFootballFixtures.useMutation({
-    onSuccess: (r) => toast.success(`동기화 완료 — 신규 ${r.created}건, 기존 ${r.skipped}건 (총 ${r.total}건 조회)`),
+    onSuccess: (r) => toast.success(`${r.usedSeason} 시즌 기준 동기화 완료 — 신규 ${r.created}건, 기존 ${r.skipped}건 (총 ${r.total}건 조회)`),
     onError: (e) => toast.error(e.message),
   });
+
+  const importSport = (sports ?? []).find((s: any) => s.id === importSportId);
+  const { data: countries, isLoading: countriesLoading } = trpc.sport.countries.useQuery(
+    { sportName: importSport?.name ?? "" },
+    { enabled: !!importSport }
+  );
+  const { data: foundLeagues, isLoading: leaguesLoading } = trpc.sport.searchLeagues.useQuery(
+    { sportName: importSport?.name ?? "", country: importCountry ?? "" },
+    { enabled: !!importSport && !!importCountry }
+  );
+  const bulkImport = trpc.sport.bulkImportLeagues.useMutation({
+    onSuccess: (r) => {
+      toast.success(`가져오기 완료 — 신규 ${r.created}건, 기존 ${r.skipped}건`);
+      utils.sport.allLeagues.invalidate();
+      setSelectedLeagues({});
+      setImportDialog(false);
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const toggleLeague = (id: string, checked: boolean) => {
+    setSelectedLeagues((prev) => {
+      const next = { ...prev };
+      if (checked) next[id] = "minor";
+      else delete next[id];
+      return next;
+    });
+  };
+
+  const submitImport = () => {
+    if (!importSportId || Object.keys(selectedLeagues).length === 0) return;
+    const items = (foundLeagues ?? [])
+      .filter((l: any) => selectedLeagues[l.externalLeagueId])
+      .map((l: any) => ({ externalLeagueId: l.externalLeagueId, name: l.name, country: l.country, logoUrl: l.logoUrl, tier: selectedLeagues[l.externalLeagueId] }));
+    bulkImport.mutate({ sportId: importSportId, items });
+  };
 
   return (
     <div>
@@ -35,11 +78,12 @@ export default function AdminSports() {
           <Button size="sm" variant="outline" onClick={() => testConnection.mutate()} disabled={testConnection.isPending}>
             <Wifi className="w-4 h-4 mr-1" />API 연결 테스트
           </Button>
-          <Button size="sm" onClick={() => setLeagueDialog(true)}><Plus className="w-4 h-4 mr-1" />리그 추가</Button>
+          <Button size="sm" onClick={() => setImportDialog(true)}><Download className="w-4 h-4 mr-1" />나라별 리그 가져오기</Button>
+          <Button size="sm" variant="outline" onClick={() => setLeagueDialog(true)}><Plus className="w-4 h-4 mr-1" />리그 직접 추가</Button>
         </div>
       </div>
 
-      <h2 className="font-bold mb-2 text-sm text-muted-foreground">종목 ({sports?.length ?? 0})</h2>
+      <h2 className="font-bold mb-2 text-sm text-muted-foreground">종목 ({sports?.length ?? 0}) — 종목 추가는 개발자에게 요청하시면 SPORT_BASE 설정 한 줄로 확장됩니다</h2>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-8">
         {(sports ?? []).map((s: any) => (
           <div key={s.id} className="p-3 rounded-xl bg-card border border-border text-center">
@@ -50,7 +94,6 @@ export default function AdminSports() {
       </div>
 
       <h2 className="font-bold mb-2 text-sm text-muted-foreground">리그 ({leagues?.length ?? 0}) — tier: major=빅리그(픽10개) / minor=비인기(픽4개)</h2>
-      <p className="text-xs text-muted-foreground mb-3">"API-Sports 리그ID"가 입력된 축구 리그만 동기화 버튼이 활성화됩니다 (예: EPL=39). API-Football 사이트에서 리그별 ID를 확인해 입력하세요.</p>
       <div className="space-y-2">
         {(leagues ?? []).map((l: any) => (
           <div key={l.id} className="p-3 rounded-lg bg-card border border-border flex justify-between items-center text-sm">
@@ -67,9 +110,64 @@ export default function AdminSports() {
         ))}
       </div>
 
+      {/* 나라별 리그 대량 가져오기 */}
+      <Dialog open={importDialog} onOpenChange={(o) => { setImportDialog(o); if (!o) { setImportCountry(null); setSelectedLeagues({}); } }}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>나라별 리그 가져오기</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <Select value={importSportId ? String(importSportId) : undefined} onValueChange={(v) => { setImportSportId(Number(v)); setImportCountry(null); setSelectedLeagues({}); }}>
+              <SelectTrigger><SelectValue placeholder="① 종목 선택" /></SelectTrigger>
+              <SelectContent>{(sports ?? []).map((s: any) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}</SelectContent>
+            </Select>
+
+            {importSportId && (
+              <Select value={importCountry ?? undefined} onValueChange={(v) => { setImportCountry(v); setSelectedLeagues({}); }} disabled={countriesLoading}>
+                <SelectTrigger><SelectValue placeholder={countriesLoading ? "국가 목록 불러오는 중..." : "② 국가 선택"} /></SelectTrigger>
+                <SelectContent className="max-h-64">
+                  {(countries ?? []).map((c: any) => <SelectItem key={c.name} value={c.name}>{c.flag ? `${c.name}` : c.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            )}
+
+            {importCountry && (
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">③ 등록할 리그를 선택하세요 (1부/2부/컵대회 등)</p>
+                {leaguesLoading ? (
+                  <p className="text-sm text-muted-foreground text-center py-6">리그 목록 불러오는 중...</p>
+                ) : (foundLeagues ?? []).length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-6">이 국가에서 조회되는 리그가 없습니다.</p>
+                ) : (
+                  (foundLeagues ?? []).map((l: any) => (
+                    <div key={l.externalLeagueId} className="flex items-center gap-3 p-2 rounded-lg bg-accent/20">
+                      <Checkbox checked={!!selectedLeagues[l.externalLeagueId]} onCheckedChange={(c) => toggleLeague(l.externalLeagueId, !!c)} />
+                      <span className="flex-1 text-sm">{l.name} {l.type && <span className="text-xs text-muted-foreground">({l.type})</span>}</span>
+                      {selectedLeagues[l.externalLeagueId] && (
+                        <Select value={selectedLeagues[l.externalLeagueId]} onValueChange={(v) => setSelectedLeagues((p) => ({ ...p, [l.externalLeagueId]: v as "major" | "minor" }))}>
+                          <SelectTrigger className="w-28 h-7 text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="major">빅리그</SelectItem>
+                            <SelectItem value="minor">비인기</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+          {Object.keys(selectedLeagues).length > 0 && (
+            <Button className="w-full mt-3" onClick={submitImport} disabled={bulkImport.isPending}>
+              {bulkImport.isPending ? "가져오는 중..." : `선택한 ${Object.keys(selectedLeagues).length}개 리그 등록`}
+            </Button>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* 리그 직접 추가 (수동, 예외적인 경우용) */}
       <Dialog open={leagueDialog} onOpenChange={setLeagueDialog}>
         <DialogContent>
-          <DialogHeader><DialogTitle>리그 추가</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>리그 직접 추가</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <Input placeholder="리그명" onChange={(e) => setForm({ ...form, name: e.target.value })} />
             <Select value={form.sportId ? String(form.sportId) : undefined} onValueChange={(v) => setForm({ ...form, sportId: Number(v) })}>
@@ -84,7 +182,7 @@ export default function AdminSports() {
               </SelectContent>
             </Select>
             <Input placeholder="국가" onChange={(e) => setForm({ ...form, country: e.target.value })} />
-            <Input placeholder="API-Sports 리그ID (축구만, 선택사항 — 예: 39)" onChange={(e) => setForm({ ...form, externalLeagueId: e.target.value })} />
+            <Input placeholder="API-Sports 리그ID (선택사항)" onChange={(e) => setForm({ ...form, externalLeagueId: e.target.value })} />
           </div>
           <Button className="w-full mt-3" onClick={() => createLeague.mutate(form)}>추가</Button>
         </DialogContent>
@@ -92,4 +190,3 @@ export default function AdminSports() {
     </div>
   );
 }
-

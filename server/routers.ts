@@ -1,8 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { and, eq, desc, gte, lte, sql, isNull } from "drizzle-orm";
-import { getDb, verifyLogin, getAllUsers, createAdmin, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getAllBots, getBotById, getBotPicksForMatch, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow, syncFootballFixturesForLeague } from "./db";
-import { testApiSportsConnection } from "./_core/apiSports";
+import { getDb, verifyLogin, getAllUsers, createAdmin, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getAllBots, getBotById, getBotPicksForMatch, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow, syncFootballFixturesForLeague, bulkImportLeagues } from "./db";
+import { testApiSportsConnection, fetchCountries, searchLeaguesByCountry, SUPPORTED_SPORTS } from "./_core/apiSports";
 import { users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory } from "../drizzle/schema";
 import { storagePut } from "./storage";
 import { COOKIE_NAME } from "@shared/const";
@@ -102,6 +102,23 @@ export const appRouter = router({
     syncFootballFixtures: adminProcedure
       .input(z.object({ leagueId: z.number(), season: z.number().default(new Date().getFullYear()) }))
       .mutation(({ input }) => syncFootballFixturesForLeague(input.leagueId, input.season)),
+    // 나라별 리그 대량 가져오기 (2026 신규)
+    supportedSports: adminProcedure.query(() => SUPPORTED_SPORTS),
+    countries: adminProcedure
+      .input(z.object({ sportName: z.string() }))
+      .query(({ input }) => fetchCountries(input.sportName)),
+    searchLeagues: adminProcedure
+      .input(z.object({ sportName: z.string(), country: z.string() }))
+      .query(({ input }) => searchLeaguesByCountry(input.sportName, input.country)),
+    bulkImportLeagues: adminProcedure
+      .input(z.object({
+        sportId: z.number(),
+        items: z.array(z.object({
+          externalLeagueId: z.string(), name: z.string(), country: z.string(),
+          logoUrl: z.string().nullable().optional(), tier: z.enum(["major", "minor"]),
+        })),
+      }))
+      .mutation(({ input }) => bulkImportLeagues(input.sportId, input.items)),
     deleteSport: adminProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {

@@ -340,7 +340,24 @@ export async function getBotStatsByCategory(botId: number) {
 // 2026 삭제됨: getUserAnalysisList (유저 분석글 작성 폐지 — 4절 참고, matchAnalysis(AI 분석가 전용)로 대체)
 
 // ─── Events (월간 이벤트) ────────────────────────────────────────────────────
-// ─── API-Sports 동기화 (축구 우선 구현) ────────────────────────────────────
+// 나라별 리그 다중 선택 → 일괄 등록 (2026 신규 — 리그를 한 건씩 손으로 넣던 문제 해결)
+export async function bulkImportLeagues(sportId: number, items: { externalLeagueId: string; name: string; country: string; logoUrl?: string | null; tier: "major" | "minor" }[]) {
+  const db = await getDb();
+  if (!db) throw new Error("데이터베이스에 연결할 수 없습니다.");
+  let created = 0, skipped = 0;
+  for (const item of items) {
+    const existing = await db.select().from(leagues).where(eq(leagues.externalLeagueId, item.externalLeagueId)).limit(1);
+    if (existing.length > 0) { skipped++; continue; }
+    await db.insert(leagues).values({
+      sportId, name: item.name, country: item.country, logoUrl: item.logoUrl ?? null,
+      externalLeagueId: item.externalLeagueId, tier: item.tier,
+    });
+    created++;
+  }
+  return { created, skipped };
+}
+
+
 export async function syncFootballFixturesForLeague(leagueId: number, season: number) {
   const db = await getDb();
   if (!db) throw new Error("데이터베이스에 연결할 수 없습니다.");
@@ -350,7 +367,14 @@ export async function syncFootballFixturesForLeague(leagueId: number, season: nu
   if (!league) throw new Error("리그를 찾을 수 없습니다.");
   if (!league.externalLeagueId) throw new Error("이 리그에 API-Sports 리그ID(externalLeagueId)가 설정되어 있지 않습니다. 종목·리그 관리에서 먼저 입력하세요.");
 
-  const fixtures = await fetchUpcomingFixtures(league.externalLeagueId, season, 15);
+  // 유럽 리그 시즌은 "8월 시작 연도" 기준이라, 시즌 전환기(여름)엔 올해 시즌이 비어있을 수 있음
+  // → 올해 시즌으로 먼저 시도하고, 결과가 0건이면 작년 시즌으로 자동 재시도
+  let fixtures = await fetchUpcomingFixtures(league.externalLeagueId, season, 15);
+  let usedSeason = season;
+  if (fixtures.length === 0) {
+    fixtures = await fetchUpcomingFixtures(league.externalLeagueId, season - 1, 15);
+    usedSeason = season - 1;
+  }
   let created = 0, skipped = 0;
 
   for (const f of fixtures) {
@@ -373,7 +397,7 @@ export async function syncFootballFixturesForLeague(leagueId: number, season: nu
     created++;
   }
 
-  return { created, skipped, total: fixtures.length };
+  return { created, skipped, total: fixtures.length, usedSeason };
 }
 
 

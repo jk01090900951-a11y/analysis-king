@@ -1,8 +1,16 @@
 import { ENV } from "./env";
 
-// API-Sports.io 축구(API-Football v3) 연동
-// 문서: https://www.api-football.com/documentation-v3
-const FOOTBALL_BASE = "https://v3.football.api-sports.io";
+// API-Sports.io 종목별 서브도메인 (같은 회사, 같은 키로 5개 종목 전부 사용 가능)
+// 종목 추가는 이 객체에 한 줄만 추가하면 됩니다 (SPORT_BASE에 없는 종목은 리그가져오기 기능이 비활성화됨)
+const SPORT_BASE: Record<string, string> = {
+  "축구": "https://v3.football.api-sports.io",
+  "야구": "https://v1.baseball.api-sports.io",
+  "농구": "https://v1.basketball.api-sports.io",
+  "배구": "https://v1.volleyball.api-sports.io",
+  "아이스하키": "https://v1.hockey.api-sports.io",
+};
+
+export const SUPPORTED_SPORTS = Object.keys(SPORT_BASE);
 
 async function apiSportsGet<T = any>(url: string): Promise<T> {
   if (!ENV.API_SPORTS_KEY) throw new Error("API_SPORTS_KEY가 설정되지 않았습니다 (.env 확인)");
@@ -16,6 +24,46 @@ async function apiSportsGet<T = any>(url: string): Promise<T> {
   return res.json();
 }
 
+export interface FoundLeague {
+  externalLeagueId: string;
+  name: string;
+  type: string | null; // League / Cup 등
+  logoUrl: string | null;
+  country: string;
+}
+
+// 나라 목록 조회 (드롭다운용 — 정확한 국가명 스펠링을 몰라도 되게)
+export async function fetchCountries(sportName: string): Promise<{ name: string; code: string | null; flag: string | null }[]> {
+  const base = SPORT_BASE[sportName];
+  if (!base) throw new Error(`지원하지 않는 종목입니다: ${sportName}`);
+  const url = `${base}/countries`;
+  const data = await apiSportsGet<{ response: any[] }>(url);
+  return (data.response ?? []).map((c: any) => ({ name: c.name, code: c.code ?? null, flag: c.flag ?? null }));
+}
+
+// 나라 이름으로 해당 종목의 모든 리그(1부/2부/컵대회 등) 검색
+// ⚠️ 종목별로 API 응답 구조가 약간 다름(축구=league가 중첩객체, 나머지=id가 최상위) — 둘 다 방어적으로 처리
+export async function searchLeaguesByCountry(sportName: string, country: string): Promise<FoundLeague[]> {
+  const base = SPORT_BASE[sportName];
+  if (!base) throw new Error(`지원하지 않는 종목입니다: ${sportName}`);
+
+  const url = `${base}/leagues?country=${encodeURIComponent(country)}`;
+  const data = await apiSportsGet<{ response: any[] }>(url);
+
+  return (data.response ?? []).map((item: any): FoundLeague => {
+    // 축구(v3): { league: { id, name, type, logo }, country: { name } }
+    // 그 외(v1): { id, name, type, logo, country: { name } } (최상위 평탄 구조)
+    const leagueObj = item.league ?? item;
+    return {
+      externalLeagueId: String(leagueObj.id),
+      name: leagueObj.name,
+      type: leagueObj.type ?? null,
+      logoUrl: leagueObj.logo ?? null,
+      country: item.country?.name ?? country,
+    };
+  });
+}
+
 export interface ApiFootballFixture {
   fixture: { id: number; date: string; venue: { name: string | null } | null; status: { short: string } };
   league: { id: number; name: string; country: string };
@@ -25,6 +73,8 @@ export interface ApiFootballFixture {
   };
   goals: { home: number | null; away: number | null };
 }
+
+const FOOTBALL_BASE = SPORT_BASE["축구"];
 
 // 특정 리그의 향후 N경기 가져오기 (externalLeagueId = API-Sports 리그 ID, 예: EPL=39)
 export async function fetchUpcomingFixtures(externalLeagueId: string, season: number, next: number = 10): Promise<ApiFootballFixture[]> {
@@ -52,7 +102,7 @@ export async function testApiSportsConnection(): Promise<{ ok: boolean; message:
   try {
     const url = `${FOOTBALL_BASE}/status`;
     const data = await apiSportsGet<any>(url);
-    return { ok: true, message: `연결 성공 — 오늘 남은 요청 수: ${data.response?.requests?.current ?? "?"}/${data.response?.requests?.limit_day ?? "?"}` };
+    return { ok: true, message: `연결 성공 — 오늘 사용한 요청 수: ${data.response?.requests?.current ?? "?"} / 하루 한도 ${data.response?.requests?.limit_day ?? "?"}회` };
   } catch (err: any) {
     return { ok: false, message: err.message ?? "알 수 없는 오류" };
   }
