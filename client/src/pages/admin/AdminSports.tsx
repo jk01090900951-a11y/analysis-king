@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, Wifi, RefreshCw, Download } from "lucide-react";
+import { Plus, Wifi, RefreshCw, Download, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 export default function AdminSports() {
@@ -16,6 +16,11 @@ export default function AdminSports() {
   const [leagueDialog, setLeagueDialog] = useState(false);
   const [form, setForm] = useState<any>({ tier: "minor" });
 
+  const [sportEditDialog, setSportEditDialog] = useState(false);
+  const [sportEditForm, setSportEditForm] = useState<any>({});
+  const [leagueEditDialog, setLeagueEditDialog] = useState(false);
+  const [leagueEditForm, setLeagueEditForm] = useState<any>({});
+
   const [importDialog, setImportDialog] = useState(false);
   const [importSportId, setImportSportId] = useState<number | null>(null);
   const [importCountry, setImportCountry] = useState<string | null>(null);
@@ -25,12 +30,28 @@ export default function AdminSports() {
     onSuccess: () => { toast.success("리그 추가 완료"); utils.sport.allLeagues.invalidate(); setLeagueDialog(false); },
     onError: (e) => toast.error(e.message),
   });
+  const updateSport = trpc.sport.update.useMutation({
+    onSuccess: () => { toast.success("종목 수정 완료"); utils.sport.listAdmin.invalidate(); setSportEditDialog(false); },
+    onError: (e) => toast.error(e.message),
+  });
+  const deleteSport = trpc.sport.deleteSport.useMutation({
+    onSuccess: () => { toast.success("종목 삭제 완료"); utils.sport.listAdmin.invalidate(); utils.sport.allLeagues.invalidate(); },
+    onError: (e) => toast.error(e.message),
+  });
+  const updateLeague = trpc.sport.updateLeague.useMutation({
+    onSuccess: () => { toast.success("리그 수정 완료"); utils.sport.allLeagues.invalidate(); setLeagueEditDialog(false); },
+    onError: (e) => toast.error(e.message),
+  });
+  const deleteLeague = trpc.sport.deleteLeague.useMutation({
+    onSuccess: () => { toast.success("리그 삭제 완료"); utils.sport.allLeagues.invalidate(); },
+    onError: (e) => toast.error(e.message),
+  });
   const testConnection = trpc.sport.testApiSportsConnection.useMutation({
     onSuccess: (r) => (r.ok ? toast.success(r.message) : toast.error(r.message)),
     onError: (e) => toast.error(e.message),
   });
   const syncFixtures = trpc.sport.syncFootballFixtures.useMutation({
-    onSuccess: (r) => toast.success(`${r.usedSeason} 시즌 기준 동기화 완료 — 신규 ${r.created}건, 기존 ${r.skipped}건 (총 ${r.total}건 조회)`),
+    onSuccess: (r) => toast.success(`${r.usedSeason} 시즌 · 오늘부터 30일 범위 기준 — 신규 ${r.created}건, 기존 ${r.skipped}건 (총 ${r.total}건 조회)`),
     onError: (e) => toast.error(e.message),
   });
 
@@ -86,9 +107,17 @@ export default function AdminSports() {
       <h2 className="font-bold mb-2 text-sm text-muted-foreground">종목 ({sports?.length ?? 0}) — 종목 추가는 개발자에게 요청하시면 SPORT_BASE 설정 한 줄로 확장됩니다</h2>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-8">
         {(sports ?? []).map((s: any) => (
-          <div key={s.id} className="p-3 rounded-xl bg-card border border-border text-center">
+          <div key={s.id} className="p-3 rounded-xl bg-card border border-border text-center relative group">
             <div className="text-2xl">{s.icon}</div>
             <p className="text-sm font-medium mt-1">{s.name}</p>
+            <div className="absolute top-1 right-1 flex opacity-0 group-hover:opacity-100 transition-opacity">
+              <Button size="sm" variant="ghost" className="h-6 w-6 p-0" onClick={() => { setSportEditForm(s); setSportEditDialog(true); }}>
+                <Pencil className="w-3 h-3" />
+              </Button>
+              <Button size="sm" variant="ghost" className="h-6 w-6 p-0 text-destructive" onClick={() => { if (confirm(`"${s.name}" 종목을 삭제하시겠습니까? 소속 리그도 함께 안 보이게 됩니다.`)) deleteSport.mutate({ id: s.id }); }}>
+                <Trash2 className="w-3 h-3" />
+              </Button>
+            </div>
           </div>
         ))}
       </div>
@@ -105,6 +134,12 @@ export default function AdminSports() {
                   <RefreshCw className="w-3.5 h-3.5 mr-1" />경기 동기화
                 </Button>
               )}
+              <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => { setLeagueEditForm(l); setLeagueEditDialog(true); }}>
+                <Pencil className="w-3.5 h-3.5" />
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive" onClick={() => { if (confirm(`"${l.name}" 리그를 삭제하시겠습니까?`)) deleteLeague.mutate({ id: l.id }); }}>
+                <Trash2 className="w-3.5 h-3.5" />
+              </Button>
             </div>
           </div>
         ))}
@@ -185,6 +220,38 @@ export default function AdminSports() {
             <Input placeholder="API-Sports 리그ID (선택사항)" onChange={(e) => setForm({ ...form, externalLeagueId: e.target.value })} />
           </div>
           <Button className="w-full mt-3" onClick={() => createLeague.mutate(form)}>추가</Button>
+        </DialogContent>
+      </Dialog>
+
+      {/* 종목 수정 */}
+      <Dialog open={sportEditDialog} onOpenChange={setSportEditDialog}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>종목 수정</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <Input placeholder="종목명" value={sportEditForm.name ?? ""} onChange={(e) => setSportEditForm({ ...sportEditForm, name: e.target.value })} />
+            <Input placeholder="아이콘(이모지)" value={sportEditForm.icon ?? ""} onChange={(e) => setSportEditForm({ ...sportEditForm, icon: e.target.value })} />
+          </div>
+          <Button className="w-full mt-3" onClick={() => updateSport.mutate({ id: sportEditForm.id, name: sportEditForm.name, icon: sportEditForm.icon })}>저장</Button>
+        </DialogContent>
+      </Dialog>
+
+      {/* 리그 수정 */}
+      <Dialog open={leagueEditDialog} onOpenChange={setLeagueEditDialog}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>리그 수정</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <Input placeholder="리그명" value={leagueEditForm.name ?? ""} onChange={(e) => setLeagueEditForm({ ...leagueEditForm, name: e.target.value })} />
+            <Input placeholder="국가" value={leagueEditForm.country ?? ""} onChange={(e) => setLeagueEditForm({ ...leagueEditForm, country: e.target.value })} />
+            <Select value={leagueEditForm.tier ?? "minor"} onValueChange={(v) => setLeagueEditForm({ ...leagueEditForm, tier: v })}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="major">major (빅리그, 픽 10개)</SelectItem>
+                <SelectItem value="minor">minor (비인기, 픽 4개)</SelectItem>
+              </SelectContent>
+            </Select>
+            <Input placeholder="API-Sports 리그ID" value={leagueEditForm.externalLeagueId ?? ""} onChange={(e) => setLeagueEditForm({ ...leagueEditForm, externalLeagueId: e.target.value })} />
+          </div>
+          <Button className="w-full mt-3" onClick={() => updateLeague.mutate({ id: leagueEditForm.id, name: leagueEditForm.name, country: leagueEditForm.country, tier: leagueEditForm.tier, externalLeagueId: leagueEditForm.externalLeagueId })}>저장</Button>
         </DialogContent>
       </Dialog>
     </div>

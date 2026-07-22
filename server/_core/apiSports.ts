@@ -76,9 +76,14 @@ export interface ApiFootballFixture {
 
 const FOOTBALL_BASE = SPORT_BASE["축구"];
 
-// 특정 리그의 향후 N경기 가져오기 (externalLeagueId = API-Sports 리그 ID, 예: EPL=39)
-export async function fetchUpcomingFixtures(externalLeagueId: string, season: number, next: number = 10): Promise<ApiFootballFixture[]> {
-  const url = `${FOOTBALL_BASE}/fixtures?league=${externalLeagueId}&season=${season}&next=${next}`;
+// 특정 리그의 향후 경기 가져오기 (오늘부터 daysAhead일 이내, 기본 30일)
+// "next=N" 방식 대신 명시적 날짜범위를 씀 — 시즌 표기 관례가 리그마다 달라서(유럽=8월시작연도, K리그=실제연도)
+// 날짜범위 방식이 훨씬 예측 가능하고, 결과가 0건일 때 원인 파악이 쉬움
+export async function fetchUpcomingFixtures(externalLeagueId: string, season: number, daysAhead: number = 30): Promise<ApiFootballFixture[]> {
+  const from = new Date();
+  const to = new Date(from.getTime() + daysAhead * 24 * 60 * 60 * 1000);
+  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  const url = `${FOOTBALL_BASE}/fixtures?league=${externalLeagueId}&season=${season}&from=${fmt(from)}&to=${fmt(to)}`;
   const data = await apiSportsGet<{ response: ApiFootballFixture[] }>(url);
   return data.response ?? [];
 }

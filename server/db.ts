@@ -81,7 +81,7 @@ export async function getAllSports() {
 export async function getAllSportsAdmin() {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(sports).orderBy(sports.sortOrder);
+  return db.select().from(sports).where(eq(sports.isActive, true)).orderBy(sports.sortOrder);
 }
 
 export async function getLeaguesBySport(sportId: number) {
@@ -93,7 +93,7 @@ export async function getLeaguesBySport(sportId: number) {
 export async function getAllLeagues() {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(leagues).orderBy(leagues.sportId, leagues.sortOrder);
+  return db.select().from(leagues).where(eq(leagues.isActive, true)).orderBy(leagues.sportId, leagues.sortOrder);
 }
 
 // ─── Matches ──────────────────────────────────────────────────────────────────
@@ -367,12 +367,11 @@ export async function syncFootballFixturesForLeague(leagueId: number, season: nu
   if (!league) throw new Error("리그를 찾을 수 없습니다.");
   if (!league.externalLeagueId) throw new Error("이 리그에 API-Sports 리그ID(externalLeagueId)가 설정되어 있지 않습니다. 종목·리그 관리에서 먼저 입력하세요.");
 
-  // 유럽 리그 시즌은 "8월 시작 연도" 기준이라, 시즌 전환기(여름)엔 올해 시즌이 비어있을 수 있음
-  // → 올해 시즌으로 먼저 시도하고, 결과가 0건이면 작년 시즌으로 자동 재시도
-  let fixtures = await fetchUpcomingFixtures(league.externalLeagueId, season, 15);
+  // 시즌 표기 관례가 리그마다 다름(유럽=8월시작연도, K리그=실제연도) → 올해로 먼저 시도, 0건이면 작년도 시도
+  let fixtures = await fetchUpcomingFixtures(league.externalLeagueId, season, 30);
   let usedSeason = season;
   if (fixtures.length === 0) {
-    fixtures = await fetchUpcomingFixtures(league.externalLeagueId, season - 1, 15);
+    fixtures = await fetchUpcomingFixtures(league.externalLeagueId, season - 1, 30);
     usedSeason = season - 1;
   }
   let created = 0, skipped = 0;
