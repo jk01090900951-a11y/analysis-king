@@ -41,18 +41,26 @@ export default function AdminMatches() {
   const runBulk = async (label: string, ids: number[], fn: (id: number) => Promise<unknown>) => {
     setProgress({ label, done: 0, total: ids.length });
     let success = 0, failed = 0;
+    let lastError = "";
     for (let i = 0; i < ids.length; i++) {
       try {
         await fn(ids[i]!);
         success++;
-      } catch (e) {
+      } catch (e: any) {
         failed++;
+        lastError = e?.message ?? String(e);
       }
       setProgress({ label, done: i + 1, total: ids.length });
     }
     setProgress(null);
     utils.match.list.invalidate();
-    toast.success(`${label} 완료 — 성공 ${success}건${failed > 0 ? `, 실패 ${failed}건` : ""}`);
+    if (failed > 0 && success === 0) {
+      toast.error(`${label} 실패 (${failed}건) — ${lastError}`, { duration: 10000 });
+    } else if (failed > 0) {
+      toast.success(`${label} 완료 — 성공 ${success}건, 실패 ${failed}건 (마지막 오류: ${lastError})`, { duration: 10000 });
+    } else {
+      toast.success(`${label} 완료 — 성공 ${success}건`);
+    }
   };
 
   const bulkGenPicks = () => runBulk("픽 일괄 생성", Array.from(selected), (id) => genPicksMutation.mutateAsync({ matchId: id }));
