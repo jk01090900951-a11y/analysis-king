@@ -84,11 +84,11 @@ export interface ApiFootballFixture {
 
 const FOOTBALL_BASE = SPORT_BASE["축구"];
 
-// 특정 리그의 향후 경기 가져오기 (오늘부터 daysAhead일 이내, 기본 30일)
+// 특정 리그의 향후 경기 가져오기 (referenceDate부터 daysAhead일 이내, 기본값=오늘부터 30일)
 // "next=N" 방식 대신 명시적 날짜범위를 씀 — 시즌 표기 관례가 리그마다 달라서(유럽=8월시작연도, K리그=실제연도)
 // 날짜범위 방식이 훨씬 예측 가능하고, 결과가 0건일 때 원인 파악이 쉬움
-export async function fetchUpcomingFixtures(externalLeagueId: string, season: number, daysAhead: number = 30): Promise<ApiFootballFixture[]> {
-  const from = new Date();
+export async function fetchUpcomingFixtures(externalLeagueId: string, season: number, daysAhead: number = 30, referenceDate: Date = new Date()): Promise<ApiFootballFixture[]> {
+  const from = referenceDate;
   const to = new Date(from.getTime() + daysAhead * 24 * 60 * 60 * 1000);
   const fmt = (d: Date) => d.toISOString().slice(0, 10);
   const url = `${FOOTBALL_BASE}/fixtures?league=${externalLeagueId}&season=${season}&from=${fmt(from)}&to=${fmt(to)}`;
@@ -110,13 +110,94 @@ export async function fetchFixtureById(fixtureId: string): Promise<ApiFootballFi
   return data.response?.[0] ?? null;
 }
 
-// 연동 상태 확인용 (관리자 화면 "API 연결 테스트" 버튼)
-export async function testApiSportsConnection(): Promise<{ ok: boolean; message: string }> {
+// 연동 상태 확인용 (관리자 화면 "API 연결 테스트" 버튼) — 종목별로 쿼터가 별도라 종목 지정 필요
+export async function testApiSportsConnection(sportName: string = "축구"): Promise<{ ok: boolean; message: string }> {
   try {
-    const url = `${FOOTBALL_BASE}/status`;
+    const base = SPORT_BASE[sportName];
+    if (!base) throw new Error(`지원하지 않는 종목입니다: ${sportName}`);
+    const url = `${base}/status`;
     const data = await apiSportsGet<any>(url);
-    return { ok: true, message: `연결 성공 — 오늘 사용한 요청 수: ${data.response?.requests?.current ?? "?"} / 하루 한도 ${data.response?.requests?.limit_day ?? "?"}회` };
+    const sub = data.response?.subscription?.plan ?? "무료";
+    return { ok: true, message: `[${sportName}] 연결 성공 (${sub} 플랜) — 오늘 사용한 요청 수: ${data.response?.requests?.current ?? "?"} / 하루 한도 ${data.response?.requests?.limit_day ?? "?"}회` };
   } catch (err: any) {
     return { ok: false, message: err.message ?? "알 수 없는 오류" };
   }
+}
+
+// ─── 야구 (API-Baseball — KBO/MLB/NPB 공통) ────────────────────────────────
+// ⚠️ 축구(API-Football)와 응답 필드명이 다를 수 있습니다. 실제 응답을 한 번 테스트해서
+//    필드명이 다르면(예: teams 대신 home/away 최상위) 아래 인터페이스만 조정하면 됩니다.
+const BASEBALL_BASE = SPORT_BASE["야구"];
+
+export interface ApiBaseballGame {
+  id: number;
+  date: string;
+  status: { short: string; long: string };
+  league: { id: number; name: string; country?: string };
+  teams: {
+    home: { id: number; name: string; logo: string | null };
+    away: { id: number; name: string; logo: string | null };
+  };
+  scores: {
+    home: { total: number | null };
+    away: { total: number | null };
+  };
+}
+
+export async function fetchUpcomingBaseballGames(externalLeagueId: string, season: number, daysAhead: number = 30, referenceDate: Date = new Date()): Promise<ApiBaseballGame[]> {
+  const from = referenceDate;
+  const to = new Date(from.getTime() + daysAhead * 24 * 60 * 60 * 1000);
+  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  // API-Baseball은 날짜범위 파라미터 지원 여부가 불확실해 우선 date 단건 방식 대신 league+season만으로 넓게 조회 후 앱단에서 날짜 필터링
+  const url = `${BASEBALL_BASE}/games?league=${externalLeagueId}&season=${season}`;
+  const data = await apiSportsGet<{ response: ApiBaseballGame[] }>(url);
+  const all = data.response ?? [];
+  return all.filter((g) => {
+    const d = new Date(g.date);
+    return d >= from && d <= to;
+  });
+}
+
+export async function fetchBaseballGameById(gameId: string): Promise<ApiBaseballGame | null> {
+  const url = `${BASEBALL_BASE}/games?id=${gameId}`;
+  const data = await apiSportsGet<{ response: ApiBaseballGame[] }>(url);
+  return data.response?.[0] ?? null;
+}
+
+
+
+export interface RealHeadToHead {
+  date: string; homeTeam: string; awayTeam: string; homeScore: number | null; awayScore: number | null;
+  result: "home" | "draw" | "away" | null; league: string;
+}
+
+// 실제 두 팀 간 최근 맞대결 기록 (팀ID 필요 — match.apiData의 teams.home.id/teams.away.id에서 추출)
+export async function fetchHeadToHead(team1Id: number, team2Id: number, last: number = 10): Promise<RealHeadToHead[]> {
+  const url = `${FOOTBALL_BASE}/fixtures/headtohead?h2h=${team1Id}-${team2Id}&last=${last}`;
+  const data = await apiSportsGet<{ response: ApiFootballFixture[] }>(url);
+  return (data.response ?? []).map((f) => {
+    const hs = f.goals.home, as = f.goals.away;
+    const result: "home" | "draw" | "away" | null = hs == null || as == null ? null : hs > as ? "home" : hs < as ? "away" : "draw";
+    return { date: f.fixture.date.slice(0, 10), homeTeam: f.teams.home.name, awayTeam: f.teams.away.name, homeScore: hs, awayScore: as, result, league: f.league.name };
+  });
+}
+
+// 경기별 부상자 명단 (fixtureId = API-Sports 경기ID, 즉 matches.externalId)
+export async function fetchInjuries(fixtureId: string): Promise<{ team: string; player: string; type: string; reason: string }[]> {
+  const url = `${FOOTBALL_BASE}/injuries?fixture=${fixtureId}`;
+  const data = await apiSportsGet<{ response: any[] }>(url);
+  return (data.response ?? []).map((i: any) => ({
+    team: i.team?.name ?? "", player: i.player?.name ?? "", type: i.player?.type ?? "", reason: i.player?.reason ?? "",
+  }));
+}
+
+// 경기별 실제(또는 예상) 라인업/포메이션
+export async function fetchLineups(fixtureId: string): Promise<{ team: string; formation: string | null; startXI: { name: string; position: string; number: number }[] }[]> {
+  const url = `${FOOTBALL_BASE}/fixtures/lineups?fixture=${fixtureId}`;
+  const data = await apiSportsGet<{ response: any[] }>(url);
+  return (data.response ?? []).map((l: any) => ({
+    team: l.team?.name ?? "",
+    formation: l.formation ?? null,
+    startXI: (l.startXI ?? []).map((p: any) => ({ name: p.player?.name ?? "", position: p.player?.pos ?? "", number: p.player?.number ?? 0 })),
+  }));
 }

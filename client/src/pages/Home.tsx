@@ -3,6 +3,8 @@ import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import Navbar from "@/components/Navbar";
 import CategoryMenu from "@/components/CategoryMenu";
+import AdNoticeBanner from "@/components/AdNoticeBanner";
+import Footer from "@/components/Footer";
 import LiveScoreCarousel from "@/components/LiveScoreCarousel";
 import AdBanner from "@/components/AdBanner";
 import { Button } from "@/components/ui/button";
@@ -16,11 +18,15 @@ const statusClass: Record<string, string> = { scheduled: "status-scheduled", liv
 export default function Home() {
   const [selectedSport, setSelectedSport] = useState<number | null>(null);
   
-  // 라이브 경기 데이터 쿼리 (진행 중이거나 예정된 경기)
+  // 라이브 경기 데이터 쿼리 (오늘의 경기를 메인에서 강조 노출)
   const { data: liveMatches, isLoading: isLiveMatchesLoading } = trpc.match.list.useQuery({
     status: undefined, // 모든 상태
-    limit: 10,
+    limit: 30,
   });
+
+  const todayStr = new Date().toDateString();
+  const todayMatches = (liveMatches ?? []).filter((m: any) => new Date(m.matchDate).toDateString() === todayStr);
+  const displayMatches = todayMatches.length > 0 ? todayMatches : (liveMatches ?? []).slice(0, 10);
 
   const { data: sports } = trpc.sport.list.useQuery();
   const { data: bots } = trpc.bot.list.useQuery();
@@ -32,6 +38,7 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
+      <AdNoticeBanner />
       <CategoryMenu />
 
       {/* Hero Section */}
@@ -82,17 +89,26 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Live Score Carousel */}
-      <section className="py-12 border-t border-border bg-card/30">
-        <div className="container">
+      {/* 오늘의 경기 — 메인 최상단 강조 섹션 */}
+      <section className="py-10 md:py-12 border-t border-border bg-card/30">
+        <div className="container px-4 md:px-6">
           <div className="flex items-center justify-between mb-6">
             <div>
-              <h2 className="text-2xl font-bold">🔴 실시간 경기</h2>
-              <p className="text-muted-foreground text-sm mt-1">진행 중이거나 예정된 경기를 확인하세요</p>
+              <h2 className="text-xl md:text-2xl font-bold flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 text-primary">
+                  <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />오늘의 경기
+                </span>
+              </h2>
+              <p className="text-muted-foreground text-xs md:text-sm mt-1">
+                {todayMatches.length > 0 ? `오늘 예정된 ${todayMatches.length}개 경기` : "가장 가까운 예정 경기를 보여드립니다"}
+              </p>
             </div>
+            <Link href="/matches">
+              <Button variant="ghost" size="sm" className="text-primary shrink-0">전체보기 <ChevronRight className="w-4 h-4 ml-1" /></Button>
+            </Link>
           </div>
           <LiveScoreCarousel
-            matches={liveMatches?.map((match: any) => ({
+            matches={displayMatches.map((match: any) => ({
               id: match.id,
               homeTeam: match.homeTeam,
               awayTeam: match.awayTeam,
@@ -102,7 +118,7 @@ export default function Home() {
               status: match.status,
               leagueName: match.leagueName,
               sportIcon: match.sportIcon,
-            })) || []}
+            }))}
             isLoading={isLiveMatchesLoading}
           />
         </div>
@@ -329,13 +345,7 @@ export default function Home() {
       </section>
 
       {/* Footer */}
-      <footer className="border-t border-border py-8">
-        <div className="container text-center text-sm text-muted-foreground">
-          <p className="mb-2">분석왕은 회원가입 없이 누구나 무료로 이용할 수 있는 스포츠 분석 콘텐츠 서비스입니다.</p>
-          <p>모든 서비스는 광고 수익만으로 운영되며, 유료 결제나 포인트 제도는 없습니다.</p>
-          <p className="mt-4 text-xs">© 2026 분석왕. All rights reserved.</p>
-        </div>
-      </footer>
+      <Footer />
     </div>
   );
 }

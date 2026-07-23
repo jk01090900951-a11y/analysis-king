@@ -5,7 +5,8 @@ import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { LayoutDashboard, Trophy, Calendar, CheckCircle, Users, Settings, Zap, ChevronRight } from "lucide-react";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { LayoutDashboard, Trophy, Calendar, CheckCircle, Users, Settings, Zap, ChevronRight, Menu, Megaphone } from "lucide-react";
 
 const adminNav = [
   { href: "/admin", label: "대시보드", icon: LayoutDashboard },
@@ -13,6 +14,7 @@ const adminNav = [
   { href: "/admin/matches", label: "경기 등록", icon: Calendar },
   { href: "/admin/bots", label: "AI 봇 관리", icon: Trophy },
   { href: "/admin/settle", label: "결과 입력·정산", icon: CheckCircle },
+  { href: "/admin/settings", label: "광고 설정", icon: Megaphone },
   { href: "/admin/users", label: "관리자 계정 관리", icon: Users },
 ];
 
@@ -48,6 +50,7 @@ function AdminLoginForm() {
 export default function AdminLayout({ children }: { children: ReactNode }) {
   const [location] = useLocation();
   const { user, isAuthenticated, loading } = useAuth();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   if (loading) return (
     <div className="min-h-screen bg-background flex items-center justify-center">
@@ -57,42 +60,63 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
 
   if (!isAuthenticated) return <AdminLoginForm />;
 
+  const navContent = (
+    <>
+      <div className="p-5 border-b border-sidebar-border">
+        <Link href="/" className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg gold-gradient flex items-center justify-center">
+            <Zap className="w-3.5 h-3.5 text-black" />
+          </div>
+          <span className="font-bold text-sm gold-text">분석왕</span>
+        </Link>
+        <p className="text-xs text-muted-foreground mt-1">관리자 대시보드</p>
+      </div>
+      <nav className="flex-1 p-3 flex flex-col gap-1">
+        {adminNav.map(({ href, label, icon: Icon }) => {
+          const isActive = location === href;
+          return (
+            <Link key={href} href={href}>
+              <button onClick={() => setMobileNavOpen(false)} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${isActive ? "bg-primary/15 text-primary" : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`}>
+                <Icon className="w-4 h-4 shrink-0" />
+                <span className="flex-1 text-left">{label}</span>
+                {isActive && <ChevronRight className="w-3 h-3 opacity-60" />}
+              </button>
+            </Link>
+          );
+        })}
+      </nav>
+      <div className="p-3 border-t border-sidebar-border space-y-1">
+        <Link href="/">
+          <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-all">
+            ← 사용자 화면으로
+          </button>
+        </Link>
+        <AdminLogoutButton />
+      </div>
+    </>
+  );
+
   return (
     <div className="min-h-screen bg-background flex">
-      <aside className="w-60 shrink-0 bg-sidebar-background border-r border-sidebar-border flex flex-col">
-        <div className="p-5 border-b border-sidebar-border">
-          <Link href="/" className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg gold-gradient flex items-center justify-center">
-              <Zap className="w-3.5 h-3.5 text-black" />
-            </div>
-            <span className="font-bold text-sm gold-text">분석왕</span>
-          </Link>
-          <p className="text-xs text-muted-foreground mt-1">관리자 대시보드</p>
-        </div>
-        <nav className="flex-1 p-3 flex flex-col gap-1">
-          {adminNav.map(({ href, label, icon: Icon }) => {
-            const isActive = location === href;
-            return (
-              <Link key={href} href={href}>
-                <button className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${isActive ? "bg-primary/15 text-primary" : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`}>
-                  <Icon className="w-4 h-4 shrink-0" />
-                  <span className="flex-1 text-left">{label}</span>
-                  {isActive && <ChevronRight className="w-3 h-3 opacity-60" />}
-                </button>
-              </Link>
-            );
-          })}
-        </nav>
-        <div className="p-3 border-t border-sidebar-border space-y-1">
-          <Link href="/">
-            <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-all">
-              ← 사용자 화면으로
-            </button>
-          </Link>
-          <AdminLogoutButton />
-        </div>
+      {/* 데스크탑: 고정 사이드바 */}
+      <aside className="hidden lg:flex w-60 shrink-0 bg-sidebar-background border-r border-sidebar-border flex-col">
+        {navContent}
       </aside>
-      <main className="flex-1 overflow-auto">{children}</main>
+
+      {/* 모바일: 상단바 + 슬라이드 사이드바 */}
+      <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
+        <SheetContent side="left" className="w-64 p-0 bg-sidebar-background flex flex-col">
+          {navContent}
+        </SheetContent>
+      </Sheet>
+
+      <div className="flex-1 flex flex-col min-w-0">
+        <div className="lg:hidden sticky top-0 z-20 flex items-center gap-3 px-4 py-3 border-b border-border bg-background/95 backdrop-blur">
+          <Button variant="ghost" size="icon" onClick={() => setMobileNavOpen(true)}><Menu className="w-5 h-5" /></Button>
+          <span className="font-bold text-sm gold-text">분석왕 관리자</span>
+        </div>
+        <main className="flex-1 overflow-auto">{children}</main>
+      </div>
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import bcrypt from "bcryptjs";
 import { InsertUser, users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory, pitcherStartHistory, playerAppearanceLog } from "../drizzle/schema";
 import { ENV } from './_core/env';
-import { fetchUpcomingFixtures, ApiFootballFixture } from './_core/apiSports';
+import { fetchUpcomingFixtures, fetchFixtureById, fetchUpcomingBaseballGames, ApiFootballFixture } from './_core/apiSports';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -133,10 +133,19 @@ export async function getMatches(filters?: { leagueId?: number; sportId?: number
   if (filters?.status) conditions.push(eq(matches.status, filters.status as any));
   if (filters?.sportId) conditions.push(eq(leagues.sportId, filters.sportId));
 
-  if (conditions.length > 0) {
-    return (query as any).where(and(...conditions)).orderBy(matches.matchDate).limit(filters?.limit ?? 50);
-  }
-  return (query as any).orderBy(matches.matchDate).limit(filters?.limit ?? 50);
+  const rows = conditions.length > 0
+    ? await (query as any).where(and(...conditions)).orderBy(matches.matchDate).limit(filters?.limit ?? 50)
+    : await (query as any).orderBy(matches.matchDate).limit(filters?.limit ?? 50);
+
+  if (rows.length === 0) return rows;
+  const ids = rows.map((r: any) => r.id);
+  const [analysisRows, pickRows] = await Promise.all([
+    db.selectDistinct({ matchId: matchAnalysis.matchId }).from(matchAnalysis).where(inArray(matchAnalysis.matchId, ids)),
+    db.selectDistinct({ matchId: botPicks.matchId }).from(botPicks).where(inArray(botPicks.matchId, ids)),
+  ]);
+  const analyzedSet = new Set(analysisRows.map((r: any) => r.matchId));
+  const pickedSet = new Set(pickRows.map((r: any) => r.matchId));
+  return rows.map((r: any) => ({ ...r, hasAnalysis: analyzedSet.has(r.id), hasPicks: pickedSet.has(r.id) }));
 }
 
 export async function getMatchById(id: number) {
@@ -157,6 +166,7 @@ export async function getMatchById(id: number) {
     totalGoals: matches.totalGoals,
     overUnderLine: matches.overUnderLine,
     apiData: matches.apiData,
+    externalId: matches.externalId,
     status: matches.status,
     leagueName: leagues.name,
     leagueCountry: leagues.country,
@@ -366,6 +376,56 @@ export async function bulkImportLeagues(sportId: number, items: { externalLeague
   return { created, skipped, reactivated };
 }
 
+// ─── 경기 상태 자동 갱신 (2026 신규 — 예정→진행중→종료 자동 반영) ─────────────
+// API-Football의 fixture.status.short 코드를 우리 상태값으로 매핑
+function mapApiStatus(short: string): "scheduled" | "live" | "finished" | "cancelled" {
+  if (["NS", "TBD"].includes(short)) return "scheduled";
+  if (["1H", "2H", "HT", "ET", "P", "BT", "LIVE", "INT"].includes(short)) return "live";
+  if (["FT", "AET", "PEN"].includes(short)) return "finished";
+  if (["PST", "CANC", "ABD", "AWD", "WO"].includes(short)) return "cancelled";
+  return "scheduled";
+}
+
+// 곧 시작했거나 진행 중일 가능성이 있는 경기들을 다시 조회해서 상태/스코어 갱신
+// (매치 시작 30분 전 ~ 시작 후 4시간까지가 대상 — 그 외는 API 낭비라 건드리지 않음)
+export async function refreshLiveMatchStatuses() {
+  const db = await getDb();
+  if (!db) return { checked: 0, updated: 0 };
+
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - 4 * 60 * 60 * 1000);
+  const windowEnd = new Date(now.getTime() + 30 * 60 * 1000);
+
+  const candidates = await db.select().from(matches).where(and(
+    inArray(matches.status, ["scheduled", "live"]),
+    gte(matches.matchDate, windowStart),
+    lte(matches.matchDate, windowEnd),
+  ));
+
+  let updated = 0;
+  for (const m of candidates) {
+    if (!m.externalId) continue;
+    try {
+      const fresh = await fetchFixtureById(m.externalId);
+      if (!fresh) continue;
+      const newStatus = mapApiStatus(fresh.fixture.status.short);
+      const homeScore = fresh.goals.home;
+      const awayScore = fresh.goals.away;
+      if (newStatus !== m.status || homeScore !== m.homeScore || awayScore !== m.awayScore) {
+        await db.update(matches).set({
+          status: newStatus, homeScore, awayScore,
+          result: homeScore != null && awayScore != null ? (homeScore > awayScore ? "home" : homeScore < awayScore ? "away" : "draw") : null,
+          totalGoals: homeScore != null && awayScore != null ? homeScore + awayScore : null,
+        }).where(eq(matches.id, m.id));
+        updated++;
+      }
+    } catch (e) {
+      console.warn(`[경기상태 갱신 실패] matchId=${m.id}:`, e);
+    }
+  }
+  return { checked: candidates.length, updated };
+}
+
 
 export async function syncFootballFixturesForLeague(leagueId: number, season: number) {
   const db = await getDb();
@@ -376,15 +436,21 @@ export async function syncFootballFixturesForLeague(leagueId: number, season: nu
   if (!league) throw new Error("리그를 찾을 수 없습니다.");
   if (!league.externalLeagueId) throw new Error("이 리그에 API-Sports 리그ID(externalLeagueId)가 설정되어 있지 않습니다. 종목·리그 관리에서 먼저 입력하세요.");
 
-  // 시즌 표기 관례가 리그마다 다름(유럽=8월시작연도, K리그·MLS=실제연도) → 올해로 먼저 시도, 0건이면 작년도 시도
-  // API가 errors를 돌려주면(플랜 제한 등) 두 시도 다 실패할 텐데, 그 경우 마지막 에러 메시지를 그대로 보여줌
+  // 시즌 표기 관례가 리그마다 다름(유럽=8월시작연도, K리그·MLS=실제연도) → 올해→작년 순 시도
+  // + 2024를 마지막 안전망으로 추가 (API-Sports 무료 플랜은 2022~2024 시즌만 지원 — 유료 전환 전 파이프라인 검증용)
+  // 2024 검증 시에는 날짜범위도 2024년 내부(9월경, 대부분 리그 시즌 중)로 맞춰야 실제로 걸림
   let fixtures: ApiFootballFixture[] = [];
   let usedSeason = season;
   let lastError: Error | null = null;
-  for (const trySeason of [season, season - 1]) {
+  const attempts: { s: number; ref: Date }[] = [
+    { s: season, ref: new Date() },
+    { s: season - 1, ref: new Date() },
+    { s: 2024, ref: new Date("2024-09-01") },
+  ];
+  for (const { s, ref } of attempts) {
     try {
-      fixtures = await fetchUpcomingFixtures(league.externalLeagueId, trySeason, 30);
-      usedSeason = trySeason;
+      fixtures = await fetchUpcomingFixtures(league.externalLeagueId, s, 30, ref);
+      usedSeason = s;
       if (fixtures.length > 0) break;
     } catch (err) {
       lastError = err as Error;
@@ -414,6 +480,55 @@ export async function syncFootballFixturesForLeague(leagueId: number, season: nu
   }
 
   return { created, skipped, total: fixtures.length, usedSeason };
+}
+
+// 야구(KBO/MLB/NPB 공통) 경기 동기화 — 축구와 동일한 패턴, API-Baseball 응답 구조에 맞춰 필드만 다르게 매핑
+export async function syncBaseballGamesForLeague(leagueId: number, season: number) {
+  const db = await getDb();
+  if (!db) throw new Error("데이터베이스에 연결할 수 없습니다.");
+
+  const leagueRows = await db.select().from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+  const league = leagueRows[0];
+  if (!league) throw new Error("리그를 찾을 수 없습니다.");
+  if (!league.externalLeagueId) throw new Error("이 리그에 API-Sports 리그ID가 설정되어 있지 않습니다. 종목·리그 관리에서 먼저 입력하세요.");
+
+  // KBO/MLB/NPB 전부 실제 연도를 시즌으로 씀(유럽축구처럼 8월시작연도 아님) → 올해 우선, 2024 안전망
+  const attempts = [season, season - 1, 2024];
+  let games: Awaited<ReturnType<typeof fetchUpcomingBaseballGames>> = [];
+  let usedSeason = season;
+  let lastError: Error | null = null;
+  const ref2024 = new Date("2024-06-01"); // KBO/MLB/NPB 시즌 한창인 시점
+  for (const s of attempts) {
+    try {
+      games = await fetchUpcomingBaseballGames(league.externalLeagueId, s, 30, s === 2024 ? ref2024 : new Date());
+      usedSeason = s;
+      if (games.length > 0) break;
+    } catch (err) {
+      lastError = err as Error;
+    }
+  }
+  if (games.length === 0 && lastError) throw lastError;
+
+  let created = 0, skipped = 0;
+  for (const g of games) {
+    const externalId = String(g.id);
+    const existing = await db.select().from(matches).where(eq(matches.externalId, externalId)).limit(1);
+    if (existing.length > 0) { skipped++; continue; }
+
+    await db.insert(matches).values({
+      leagueId: league.id,
+      homeTeam: g.teams.home.name,
+      awayTeam: g.teams.away.name,
+      homeTeamLogo: g.teams.home.logo,
+      awayTeamLogo: g.teams.away.logo,
+      matchDate: new Date(g.date),
+      externalId,
+      apiData: g as unknown as Record<string, unknown>,
+      status: "scheduled",
+    });
+    created++;
+  }
+  return { created, skipped, total: games.length, usedSeason };
 }
 
 

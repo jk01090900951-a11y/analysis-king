@@ -12,6 +12,7 @@ import AdminSports from "@/pages/admin/AdminSports";
 import AdminMatches from "@/pages/admin/AdminMatches";
 import AdminBots from "@/pages/admin/AdminBots";
 import AdminSettle from "@/pages/admin/AdminSettle";
+import AdminSettings from "@/pages/admin/AdminSettings";
 import AdminUsers from "@/pages/admin/AdminUsers";
 
 function AdminRoute({ component: Component }: { component: React.ComponentType }) {
@@ -37,6 +38,7 @@ export default function App() {
       <Route path="/admin/matches" component={() => <AdminRoute component={AdminMatches} />} />
       <Route path="/admin/bots" component={() => <AdminRoute component={AdminBots} />} />
       <Route path="/admin/settle" component={() => <AdminRoute component={AdminSettle} />} />
+      <Route path="/admin/settings" component={() => <AdminRoute component={AdminSettings} />} />
       <Route path="/admin/users" component={() => <AdminRoute component={AdminUsers} />} />
 
       <Route>

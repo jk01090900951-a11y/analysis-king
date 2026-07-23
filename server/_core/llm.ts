@@ -28,7 +28,7 @@ export async function invokeLLM(params: InvokeLLMParams) {
     const schema = params.response_format.json_schema;
     const response = await client.messages.create({
       model,
-      max_tokens: 4096,
+      max_tokens: 8000,
       system: systemMsg,
       messages: chatMessages,
       tools: [
@@ -51,7 +51,7 @@ export async function invokeLLM(params: InvokeLLMParams) {
   // response_format 없는 일반 텍스트 생성 호출
   const response = await client.messages.create({
     model,
-    max_tokens: 4096,
+    max_tokens: 8000,
     system: systemMsg,
     messages: chatMessages,
   });

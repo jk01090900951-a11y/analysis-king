@@ -54,6 +54,17 @@ export default function AdminSports() {
     onSuccess: (r) => toast.success(`${r.usedSeason} 시즌 · 오늘부터 30일 범위 기준 — 신규 ${r.created}건, 기존 ${r.skipped}건 (총 ${r.total}건 조회)`),
     onError: (e) => toast.error(e.message),
   });
+  const syncBaseball = trpc.sport.syncBaseballGames.useMutation({
+    onSuccess: (r: any) => toast.success(`${r.usedSeason} 시즌 기준 — 신규 ${r.created}건, 기존 ${r.skipped}건 (총 ${r.total}건 조회)`),
+    onError: (e) => toast.error(e.message),
+  });
+  const sportNameOf = (sportId: number) => (sports ?? []).find((s: any) => s.id === sportId)?.name;
+  const syncLeague = (l: any) => {
+    const sn = sportNameOf(l.sportId);
+    if (sn === "축구") syncFixtures.mutate({ leagueId: l.id });
+    else if (sn === "야구") syncBaseball.mutate({ leagueId: l.id });
+    else toast.error(`${sn} 종목은 아직 경기 동기화 기능이 준비되지 않았습니다.`);
+  };
 
   const importSport = (sports ?? []).find((s: any) => s.id === importSportId);
   const { data: countries, isLoading: countriesLoading } = trpc.sport.countries.useQuery(
@@ -99,9 +110,10 @@ export default function AdminSports() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-black">종목 · 리그 관리</h1>
         <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => testConnection.mutate()} disabled={testConnection.isPending}>
-            <Wifi className="w-4 h-4 mr-1" />API 연결 테스트
-          </Button>
+          <Select onValueChange={(v) => testConnection.mutate({ sportName: v })}>
+            <SelectTrigger className="w-40 h-9 text-sm"><Wifi className="w-3.5 h-3.5 mr-1" /><SelectValue placeholder="API 연결 테스트" /></SelectTrigger>
+            <SelectContent>{(sports ?? []).map((s: any) => <SelectItem key={s.id} value={s.name}>{s.icon} {s.name} 테스트</SelectItem>)}</SelectContent>
+          </Select>
           <Button size="sm" onClick={() => setImportDialog(true)}><Download className="w-4 h-4 mr-1" />나라별 리그 가져오기</Button>
           <Button size="sm" variant="outline" onClick={() => setLeagueDialog(true)}><Plus className="w-4 h-4 mr-1" />리그 직접 추가</Button>
         </div>
@@ -133,7 +145,7 @@ export default function AdminSports() {
             <div className="flex items-center gap-2">
               <span className={`text-xs px-2 py-0.5 rounded-full ${l.tier === "major" ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground"}`}>{l.tier}</span>
               {l.externalLeagueId && (
-                <Button size="sm" variant="ghost" onClick={() => syncFixtures.mutate({ leagueId: l.id })} disabled={syncFixtures.isPending}>
+                <Button size="sm" variant="ghost" onClick={() => syncLeague(l)} disabled={syncFixtures.isPending || syncBaseball.isPending}>
                   <RefreshCw className="w-3.5 h-3.5 mr-1" />경기 동기화
                 </Button>
               )}

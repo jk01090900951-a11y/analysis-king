@@ -38,6 +38,11 @@ export default function AdminSettle() {
     setEditDialog({ open: true, data: m });
   };
 
+  const refreshLive = trpc.admin.refreshLiveMatches.useMutation({
+    onSuccess: (r) => { toast.success(`경기상태 확인 ${r.checked}건 중 ${r.updated}건 갱신됨`); utils.match.list.invalidate(); },
+    onError: (e) => toast.error(e.message),
+  });
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
@@ -45,12 +50,18 @@ export default function AdminSettle() {
           <h1 className="text-2xl font-black">결과 입력 · 정산</h1>
           <p className="text-sm text-muted-foreground mt-1">경기 일정·결과는 API-Sports에서 자동 수신됩니다. 이 화면은 정산 상태 확인 및 오류 시 수동 개입용입니다.</p>
         </div>
-        <div className="text-right text-xs text-muted-foreground">
-          <div className="flex items-center gap-1.5 justify-end">
-            <span className={`w-2 h-2 rounded-full ${autoSyncStatus.data?.healthy ? "bg-green-500" : "bg-red-500"}`} />
-            API 연동 {autoSyncStatus.data?.healthy ? "정상" : "오류"}
+        <div className="flex items-center gap-3">
+          <Button size="sm" variant="outline" onClick={() => refreshLive.mutate()} disabled={refreshLive.isPending}>
+            <RefreshCw className={`w-3.5 h-3.5 mr-1 ${refreshLive.isPending ? "animate-spin" : ""}`} />
+            경기상태 지금 새로고침
+          </Button>
+          <div className="text-right text-xs text-muted-foreground">
+            <div className="flex items-center gap-1.5 justify-end">
+              <span className={`w-2 h-2 rounded-full ${autoSyncStatus.data?.healthy ? "bg-green-500" : "bg-red-500"}`} />
+              API 연동 {autoSyncStatus.data?.healthy ? "정상" : "오류"}
+            </div>
+            <div>마지막 동기화: {autoSyncStatus.data?.lastSyncAt ? new Date(autoSyncStatus.data.lastSyncAt).toLocaleString("ko-KR") : "-"}</div>
           </div>
-          <div>마지막 동기화: {autoSyncStatus.data?.lastSyncAt ? new Date(autoSyncStatus.data.lastSyncAt).toLocaleString("ko-KR") : "-"}</div>
         </div>
       </div>
 

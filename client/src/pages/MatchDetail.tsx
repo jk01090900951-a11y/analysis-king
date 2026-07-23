@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
+import { useExitInterstitial } from "@/components/ExitInterstitialAd";
 import {
   Trophy, ChevronDown, ChevronUp, Star,
   Shield, Zap, BarChart2, ArrowLeft
@@ -159,6 +160,7 @@ export default function MatchDetail() {
   const { id } = useParams<{ id: string }>();
   const matchId = parseInt(id ?? "0");
   const [, navigate] = useLocation();
+  const { triggerExit, AdOverlay } = useExitInterstitial();
   const { isAdmin } = useAuth();
 
   const { data: match, isLoading: matchLoading } = trpc.match.getById.useQuery({ id: matchId }, { enabled: !!matchId });
@@ -188,7 +190,7 @@ export default function MatchDetail() {
     <div className="min-h-screen flex items-center justify-center">
       <div className="text-center space-y-4">
         <p className="text-foreground/50">경기를 찾을 수 없습니다.</p>
-        <Button variant="outline" onClick={() => navigate("/matches")}>목록으로</Button>
+        <Button variant="outline" onClick={() => triggerExit(() => navigate("/matches"))}>목록으로</Button>
       </div>
     </div>
   );
@@ -200,8 +202,8 @@ export default function MatchDetail() {
     <div className="min-h-screen bg-background">
       {/* 헤더 */}
       <div className="sticky top-0 z-20 bg-background/95 backdrop-blur border-b border-border/30">
-        <div className="max-w-2xl mx-auto px-4 py-3 flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={() => navigate("/matches")} className="shrink-0"><ArrowLeft className="w-5 h-5" /></Button>
+        <div className="max-w-2xl lg:max-w-3xl mx-auto px-4 py-3 flex items-center gap-3">
+          <Button variant="ghost" size="icon" onClick={() => triggerExit(() => navigate("/matches"))} className="shrink-0"><ArrowLeft className="w-5 h-5" /></Button>
           <div className="min-w-0">
             <p className="text-xs text-foreground/50 truncate">{match.leagueName}</p>
             <p className="text-sm font-semibold truncate">{match.homeTeam} vs {match.awayTeam}</p>
@@ -209,7 +211,7 @@ export default function MatchDetail() {
         </div>
       </div>
 
-      <div className="max-w-2xl mx-auto px-4 py-5 space-y-5">
+      <div className="max-w-2xl lg:max-w-3xl mx-auto px-4 py-5 space-y-5">
         {/* 경기 정보 카드 */}
         <div className="rounded-2xl border border-border/40 overflow-hidden" style={{ background: "linear-gradient(135deg, rgba(20,20,35,0.95) 0%, rgba(15,15,25,0.95) 100%)" }}>
           <div className="px-5 pt-4 flex items-center justify-between">
@@ -307,6 +309,7 @@ export default function MatchDetail() {
           </div>
         )}
       </div>
+      {AdOverlay}
     </div>
   );
 }
