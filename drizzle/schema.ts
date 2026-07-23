@@ -81,6 +81,13 @@ export const matches = mysqlTable("matches", {
   settleStatus: mysqlEnum("settleStatus", ["pending", "settled", "error"]).default("pending").notNull(),
   settledAt: timestamp("settledAt"),
   viewCount: int("viewCount").default(0).notNull(), // 2026: 포인트와 무관한 단순 인기도 지표(조회수)만 유지
+  // 2026 신규: 실제 API-Sports에서 가져온 경기 상세 정보 (AI가 지어내지 않고 실제 데이터를 저장)
+  homeFormation: varchar("homeFormation", { length: 20 }),
+  awayFormation: varchar("awayFormation", { length: 20 }),
+  homeLineup: json("homeLineup"), // [{name, position, number}]
+  awayLineup: json("awayLineup"),
+  injuries: json("injuries"), // [{team, player, type, reason}]
+  odds: json("odds"), // {bookmaker, homeWin, draw, awayWin, over, under} — 참고정보용
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

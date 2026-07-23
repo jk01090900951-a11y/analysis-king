@@ -97,9 +97,9 @@ export async function getAllLeagues() {
 }
 
 // ─── Matches ──────────────────────────────────────────────────────────────────
-export async function getMatches(filters?: { leagueId?: number; sportId?: number; status?: string; limit?: number }) {
+export async function getMatches(filters?: { leagueId?: number; sportId?: number; status?: string; limit?: number; offset?: number; todayOnly?: boolean; sortDesc?: boolean }) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) return { rows: [], total: 0 };
   let query = db.select({
     id: matches.id,
     leagueId: matches.leagueId,
@@ -132,12 +132,30 @@ export async function getMatches(filters?: { leagueId?: number; sportId?: number
   if (filters?.leagueId) conditions.push(eq(matches.leagueId, filters.leagueId));
   if (filters?.status) conditions.push(eq(matches.status, filters.status as any));
   if (filters?.sportId) conditions.push(eq(leagues.sportId, filters.sportId));
+  if (filters?.todayOnly) {
+    const start = new Date(); start.setHours(0, 0, 0, 0);
+    const end = new Date(); end.setHours(23, 59, 59, 999);
+    conditions.push(gte(matches.matchDate, start));
+    conditions.push(lte(matches.matchDate, end));
+  }
 
-  const rows = conditions.length > 0
-    ? await (query as any).where(and(...conditions)).orderBy(matches.matchDate).limit(filters?.limit ?? 50)
-    : await (query as any).orderBy(matches.matchDate).limit(filters?.limit ?? 50);
+  const limit = filters?.limit ?? 50;
+  const offset = filters?.offset ?? 0;
+  const orderCol = filters?.sortDesc ? desc(matches.matchDate) : matches.matchDate;
 
-  if (rows.length === 0) return rows;
+  const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+  const [rows, countResult] = await Promise.all([
+    whereClause
+      ? (query as any).where(whereClause).orderBy(orderCol).limit(limit).offset(offset)
+      : (query as any).orderBy(orderCol).limit(limit).offset(offset),
+    db.select({ count: sql<number>`count(*)` }).from(matches)
+      .leftJoin(leagues, eq(matches.leagueId, leagues.id))
+      .where(whereClause),
+  ]);
+  const total = Number(countResult[0]?.count ?? 0);
+
+  if (rows.length === 0) return { rows, total };
   const ids = rows.map((r: any) => r.id);
   const [analysisRows, pickRows] = await Promise.all([
     db.selectDistinct({ matchId: matchAnalysis.matchId }).from(matchAnalysis).where(inArray(matchAnalysis.matchId, ids)),
@@ -145,7 +163,20 @@ export async function getMatches(filters?: { leagueId?: number; sportId?: number
   ]);
   const analyzedSet = new Set(analysisRows.map((r: any) => r.matchId));
   const pickedSet = new Set(pickRows.map((r: any) => r.matchId));
-  return rows.map((r: any) => ({ ...r, hasAnalysis: analyzedSet.has(r.id), hasPicks: pickedSet.has(r.id) }));
+  return { rows: rows.map((r: any) => ({ ...r, hasAnalysis: analyzedSet.has(r.id), hasPicks: pickedSet.has(r.id) })), total };
+}
+
+// 2026 신규: 오래된 테스트 데이터(예: 2024 시즌 파이프라인 검증용) 일괄 정리
+export async function deleteMatchesBefore(beforeDate: Date) {
+  const db = await getDb();
+  if (!db) return { deleted: 0 };
+  const targets = await db.select({ id: matches.id }).from(matches).where(lte(matches.matchDate, beforeDate));
+  if (targets.length === 0) return { deleted: 0 };
+  const ids = targets.map((t) => t.id);
+  await db.delete(matchAnalysis).where(inArray(matchAnalysis.matchId, ids));
+  await db.delete(botPicks).where(inArray(botPicks.matchId, ids));
+  await db.delete(matches).where(inArray(matches.id, ids));
+  return { deleted: ids.length };
 }
 
 export async function getMatchById(id: number) {
@@ -168,6 +199,12 @@ export async function getMatchById(id: number) {
     apiData: matches.apiData,
     externalId: matches.externalId,
     status: matches.status,
+    homeFormation: matches.homeFormation,
+    awayFormation: matches.awayFormation,
+    homeLineup: matches.homeLineup,
+    awayLineup: matches.awayLineup,
+    injuries: matches.injuries,
+    odds: matches.odds,
     leagueName: leagues.name,
     leagueCountry: leagues.country,
     sportId: leagues.sportId,
@@ -681,6 +718,43 @@ export async function getTeamFormMultiWindow(teamName: string, asOfDate: Date) {
 }
 // 활용: last5 승률은 높은데 last20 승률이 낮으면 "일시적 반등" 가능성, 반대로 last5만 나쁘면
 // "슬럼프이나 장기적으로는 강팀" 식으로 해석 가능 → 프롬프트에 세 구간을 나란히 주입
+
+// 2026 신규: 팀의 "홈경기 전체" 또는 "원정경기 전체" 성적 (특정 상대와 무관, 시즌 전체 기준)
+// side="home" → 이 팀이 홈팀으로 뛴 경기만 집계 / side="away" → 원정팀으로 뛴 경기만 집계
+export async function getTeamHomeAwayRecord(teamName: string, side: "home" | "away", asOfDate: Date, limit: number = 20) {
+  const db = await getDb();
+  if (!db) return { games: 0, wins: 0, draws: 0, losses: 0, winRate: 0 };
+  const condition = side === "home" ? eq(matches.homeTeam, teamName) : eq(matches.awayTeam, teamName);
+  const rows = await db.select({ result: matches.result })
+    .from(matches)
+    .where(and(condition, eq(matches.status, "finished"), lte(matches.matchDate, asOfDate)))
+    .orderBy(desc(matches.matchDate))
+    .limit(limit);
+
+  let wins = 0, draws = 0, losses = 0;
+  for (const r of rows) {
+    const won = (side === "home" && r.result === "home") || (side === "away" && r.result === "away");
+    const drew = r.result === "draw";
+    if (won) wins++; else if (drew) draws++; else losses++;
+  }
+  return { games: rows.length, wins, draws, losses, winRate: rows.length ? Math.round((wins / rows.length) * 100) : 0 };
+}
+
+// 2026 신규: 두 팀 간 상대전적을 "홈에서 만났을 때"/"원정에서 만났을 때"로 분리 (headToHead.records JSON을 그대로 재사용)
+export function splitH2hByVenue(records: { homeTeam: string; awayTeam: string; result: string | null }[], teamName: string) {
+  const asHome = records.filter((r) => r.homeTeam === teamName);
+  const asAway = records.filter((r) => r.awayTeam === teamName);
+  const tally = (games: typeof records, isHomePerspective: boolean) => {
+    let wins = 0, draws = 0, losses = 0;
+    for (const g of games) {
+      const won = (isHomePerspective && g.result === "home") || (!isHomePerspective && g.result === "away");
+      const drew = g.result === "draw";
+      if (won) wins++; else if (drew) draws++; else losses++;
+    }
+    return { games: games.length, wins, draws, losses };
+  };
+  return { asHome: tally(asHome, true), asAway: tally(asAway, false) };
+}
 
 
 // playerAppearanceLog는 축구용으로 만들었지만 팀스포츠 전반에 범용으로 재사용 가능

@@ -1,28 +1,47 @@
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
-import { Zap, FileText, CheckCircle2 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Zap, FileText, CheckCircle2, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
+
+const PAGE_SIZE = 30;
 
 export default function AdminMatches() {
   const utils = trpc.useUtils();
-  const { data: matches, isLoading } = trpc.match.list.useQuery({ status: "scheduled", limit: 500 });
+  const { data: sports } = trpc.sport.list.useQuery();
+
+  const [sportId, setSportId] = useState<number | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string>("scheduled");
+  const [todayOnly, setTodayOnly] = useState(false);
+  const [hideDone, setHideDone] = useState(false);
+  const [page, setPage] = useState(0);
+
+  const { data, isLoading } = trpc.match.list.useQuery({
+    status: statusFilter === "all" ? undefined : statusFilter,
+    sportId: sportId ?? undefined,
+    todayOnly,
+    limit: PAGE_SIZE,
+    offset: page * PAGE_SIZE,
+  });
+  const matches = data?.rows ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [hideDone, setHideDone] = useState(false);
   const [progress, setProgress] = useState<{ label: string; done: number; total: number } | null>(null);
 
   const genPicksMutation = trpc.bot.generatePicks.useMutation();
   const genAnalysisMutation = trpc.analysis.generate.useMutation();
+  const cleanupMutation = trpc.admin.cleanupOldMatches.useMutation({
+    onSuccess: (r) => { toast.success(`오래된 데이터 ${r.deleted}건 정리 완료`); utils.match.list.invalidate(); },
+    onError: (e) => toast.error(e.message),
+  });
 
-  const visibleMatches = useMemo(() => {
-    const list = matches ?? [];
-    return hideDone ? list.filter((m: any) => !m.hasAnalysis) : list;
-  }, [matches, hideDone]);
-
+  const visibleMatches = hideDone ? matches.filter((m: any) => !m.hasAnalysis) : matches;
   const allSelected = visibleMatches.length > 0 && visibleMatches.every((m: any) => selected.has(m.id));
 
   const toggleAll = () => {
@@ -36,6 +55,8 @@ export default function AdminMatches() {
       return next;
     });
   };
+
+  const changeFilter = (fn: () => void) => { fn(); setSelected(new Set()); setPage(0); };
 
   // 대량 처리는 병렬로 쏘지 않고 하나씩 순서대로 처리합니다 (API 요청 폭주 방지 + 진행률 표시 목적)
   const runBulk = async (label: string, ids: number[], fn: (id: number) => Promise<unknown>) => {
@@ -71,17 +92,48 @@ export default function AdminMatches() {
       <h1 className="text-2xl font-black mb-2">경기 등록 · AI 콘텐츠 생성</h1>
       <p className="text-sm text-muted-foreground mb-4">경기 일정/결과는 API-Sports에서 자동 수신됩니다. 여러 경기를 체크한 뒤 아래 버튼으로 한 번에 생성할 수 있습니다.</p>
 
-      {/* 상단 툴바 */}
+      {/* 필터 바 */}
+      <div className="flex flex-wrap items-center gap-2 mb-3 p-3 rounded-xl bg-card border border-border">
+        <Select value={sportId ? String(sportId) : "all"} onValueChange={(v) => changeFilter(() => setSportId(v === "all" ? null : Number(v)))}>
+          <SelectTrigger className="w-36 h-9 text-sm"><SelectValue placeholder="전체 종목" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">전체 종목</SelectItem>
+            {(sports ?? []).map((s: any) => <SelectItem key={s.id} value={String(s.id)}>{s.icon} {s.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={statusFilter} onValueChange={(v) => changeFilter(() => setStatusFilter(v))}>
+          <SelectTrigger className="w-32 h-9 text-sm"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="scheduled">예정</SelectItem>
+            <SelectItem value="live">진행중</SelectItem>
+            <SelectItem value="finished">종료</SelectItem>
+            <SelectItem value="all">전체 상태</SelectItem>
+          </SelectContent>
+        </Select>
+        <label className="flex items-center gap-1.5 text-sm text-muted-foreground cursor-pointer px-2">
+          <Checkbox checked={todayOnly} onCheckedChange={(c) => changeFilter(() => setTodayOnly(!!c))} />
+          오늘 경기만
+        </label>
+        <label className="flex items-center gap-1.5 text-sm text-muted-foreground cursor-pointer px-2">
+          <Checkbox checked={hideDone} onCheckedChange={(c) => setHideDone(!!c)} />
+          분석글 없는 것만
+        </label>
+        <Button
+          size="sm" variant="outline" className="ml-auto text-destructive border-destructive/30"
+          onClick={() => { if (confirm("2025-01-01 이전 데이터를 전부 삭제합니다 (파이프라인 테스트용 과거 데이터 정리). 계속할까요?")) cleanupMutation.mutate({ beforeDate: "2025-01-01" }); }}
+          disabled={cleanupMutation.isPending}
+        >
+          <Trash2 className="w-3.5 h-3.5 mr-1" />2024 이전 테스트 데이터 정리
+        </Button>
+      </div>
+
+      {/* 선택/일괄생성 툴바 */}
       <div className="flex items-center justify-between mb-4 p-3 rounded-xl bg-card border border-border sticky top-0 z-10">
         <div className="flex items-center gap-3">
           <Checkbox checked={allSelected} onCheckedChange={toggleAll} />
           <span className="text-sm text-muted-foreground">
-            {selected.size > 0 ? `${selected.size}개 선택됨` : "전체 선택"} (표시 중 {visibleMatches.length}건)
+            {selected.size > 0 ? `${selected.size}개 선택됨` : "전체 선택"} (이 페이지 {visibleMatches.length}건 / 전체 {total}건)
           </span>
-          <label className="flex items-center gap-1.5 text-sm text-muted-foreground ml-4 cursor-pointer">
-            <Checkbox checked={hideDone} onCheckedChange={(c) => setHideDone(!!c)} />
-            분석글 없는 경기만 보기
-          </label>
         </div>
         <div className="flex gap-2">
           <Button size="sm" variant="outline" onClick={bulkGenPicks} disabled={selected.size === 0 || !!progress}>
@@ -131,6 +183,19 @@ export default function AdminMatches() {
           ))
         )}
       </div>
+
+      {/* 페이지네이션 */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-3 mt-6">
+          <Button size="sm" variant="outline" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}>
+            <ChevronLeft className="w-4 h-4" />
+          </Button>
+          <span className="text-sm text-muted-foreground">{page + 1} / {totalPages} 페이지</span>
+          <Button size="sm" variant="outline" onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}>
+            <ChevronRight className="w-4 h-4" />
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

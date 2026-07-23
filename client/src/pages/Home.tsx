@@ -19,18 +19,20 @@ export default function Home() {
   const [selectedSport, setSelectedSport] = useState<number | null>(null);
   
   // 라이브 경기 데이터 쿼리 (오늘의 경기를 메인에서 강조 노출)
-  const { data: liveMatches, isLoading: isLiveMatchesLoading } = trpc.match.list.useQuery({
+  const { data: liveData, isLoading: isLiveMatchesLoading } = trpc.match.list.useQuery({
     status: undefined, // 모든 상태
     limit: 30,
   });
+  const liveMatches = liveData?.rows ?? [];
 
   const todayStr = new Date().toDateString();
-  const todayMatches = (liveMatches ?? []).filter((m: any) => new Date(m.matchDate).toDateString() === todayStr);
-  const displayMatches = todayMatches.length > 0 ? todayMatches : (liveMatches ?? []).slice(0, 10);
+  const todayMatches = liveMatches.filter((m: any) => new Date(m.matchDate).toDateString() === todayStr);
+  const displayMatches = todayMatches.length > 0 ? todayMatches : liveMatches.slice(0, 10);
 
   const { data: sports } = trpc.sport.list.useQuery();
   const { data: bots } = trpc.bot.list.useQuery();
-  const { data: matches } = trpc.match.list.useQuery({ status: "scheduled", limit: 6 });
+  const { data: matchData } = trpc.match.list.useQuery({ status: "scheduled", limit: 6 });
+  const matches = matchData?.rows;
   const { data: botChampion } = trpc.botChampion.recent.useQuery();
 
   const topBots = bots?.slice(0, 3) ?? [];

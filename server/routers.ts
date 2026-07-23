@@ -1,8 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { and, eq, desc, gte, lte, sql, isNull, inArray } from "drizzle-orm";
-import { getDb, verifyLogin, getAllUsers, createAdmin, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getAllBots, getBotById, getBotPicksForMatch, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow, syncFootballFixturesForLeague, syncBaseballGamesForLeague, bulkImportLeagues, refreshLiveMatchStatuses } from "./db";
-import { testApiSportsConnection, fetchCountries, searchLeaguesByCountry, SUPPORTED_SPORTS, fetchHeadToHead, fetchInjuries } from "./_core/apiSports";
+import { getDb, verifyLogin, getAllUsers, createAdmin, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getAllBots, getBotById, getBotPicksForMatch, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow, syncFootballFixturesForLeague, syncBaseballGamesForLeague, bulkImportLeagues, refreshLiveMatchStatuses, deleteMatchesBefore, getTeamHomeAwayRecord, splitH2hByVenue } from "./db";
+import { testApiSportsConnection, fetchCountries, searchLeaguesByCountry, SUPPORTED_SPORTS, fetchHeadToHead, fetchInjuries, fetchLineups, fetchOdds } from "./_core/apiSports";
 import { users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory } from "../drizzle/schema";
 import { storagePut } from "./storage";
 import { COOKIE_NAME } from "@shared/const";
@@ -35,6 +35,183 @@ function parseLineupAppearances(apiData: Record<string, unknown>): {
 }[] {
   // TODO: apiData.lineups?.[].startXI / substitutes 등 실제 구조에 맞춰 매핑
   return [];
+}
+
+// 분석글 생성 핵심 로직 — analysis.generate(관리자수동)/ensureGenerated(사용자자동)/prescheduleForMajorLeagues 공용
+async function generateAnalysisForMatch(matchId: number) {
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const match = await getMatchById(matchId);
+      if (!match) throw new TRPCError({ code: "NOT_FOUND" });
+      const allBots = await getAllBots();
+      if (allBots.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "등록된 분석가가 없습니다." });
+
+      // 리그 등급별 생성량: 빅리그(major)=10명(승무패5+언더오버5), 비인기(minor)=4명(승무패2+언더오버2)
+      const leagueRow = await db.select().from(leagues).where(eq(leagues.id, match.leagueId)).limit(1);
+      const isMajor = leagueRow[0]?.tier === "major";
+      const wdlCount = isMajor ? 5 : 2;
+      const ouCount = isMajor ? 5 : 2;
+      const activeBots = allBots.filter((b: any) => b.isActive).slice(0, wdlCount + ouCount);
+      const bots = activeBots.map((b: any, i: number) => ({ ...b, _pickType: i < wdlCount ? "win_draw_lose" as const : "under_over" as const }));
+
+      const matchInfo = `${match.homeTeam} vs ${match.awayTeam} (${match.leagueName}, ${new Date(match.matchDate).toLocaleDateString("ko-KR")})`;
+      const apiData = (match.apiData as Record<string, unknown>) ?? {};
+
+      const h2hExisting = await getHeadToHead(matchId);
+      let h2hNote = "";
+      let injuriesNote = "";
+      if (!h2hExisting) {
+        try {
+          const apiTeams = (apiData as any)?.teams;
+          const homeTeamId = apiTeams?.home?.id;
+          const awayTeamId = apiTeams?.away?.id;
+          if (homeTeamId && awayTeamId && match.sportName?.includes("축구")) {
+            const realH2h = await fetchHeadToHead(homeTeamId, awayTeamId, 10);
+            if (realH2h.length > 0) {
+              const homeWins = realH2h.filter((r) => r.result === "home" && r.homeTeam === match.homeTeam).length
+                + realH2h.filter((r) => r.result === "away" && r.awayTeam === match.homeTeam).length;
+              const awayWins = realH2h.filter((r) => r.result === "away" && r.awayTeam === match.awayTeam).length
+                + realH2h.filter((r) => r.result === "home" && r.homeTeam === match.awayTeam).length;
+              const draws = realH2h.filter((r) => r.result === "draw").length;
+              const avgGoals = realH2h.reduce((s, r) => s + (r.homeScore ?? 0) + (r.awayScore ?? 0), 0) / realH2h.length;
+              await db.insert(headToHead).values({
+                matchId: matchId, homeTeam: match.homeTeam, awayTeam: match.awayTeam,
+                records: realH2h, totalGames: realH2h.length, homeWins, draws, awayWins, avgTotalGoals: avgGoals.toFixed(2),
+              });
+            }
+          }
+        } catch (e) {
+          console.warn(`[H2H 조회 실패] match=${matchId}:`, e);
+          // 상대전적 API 호출이 실패해도 분석글 생성 자체는 계속 진행 (h2h 없이)
+        }
+      }
+      const h2hData = await getHeadToHead(matchId);
+      if (h2hData) {
+        h2hNote = `[실제 상대전적] 최근 ${h2hData.totalGames}경기 — ${match.homeTeam} ${h2hData.homeWins}승 ${h2hData.draws}무 ${match.awayTeam} ${h2hData.awayWins}승, 경기당 평균 ${h2hData.avgTotalGoals}골. 세부 기록: ${JSON.stringify(h2hData.records).slice(0, 800)}`;
+      }
+
+      // 실제 부상자 명단 (축구, externalId 있는 경우만)
+      try {
+        if (match.externalId && match.sportName?.includes("축구")) {
+          const injuries = await fetchInjuries(match.externalId);
+          if (injuries.length > 0) {
+            injuriesNote = `[부상자 명단] ${injuries.map((i) => `${i.team} - ${i.player}(${i.type || i.reason})`).join(", ")}`;
+            await db.update(matches).set({ injuries }).where(eq(matches.id, matchId));
+          }
+        }
+      } catch (e) {
+        console.warn(`[부상자 조회 실패] match=${matchId}:`, e);
+      }
+
+      // 2026 신규: 실제 라인업/포메이션 (AI가 지어내지 않고 API-Sports 실 데이터 저장)
+      let lineupNote = "";
+      try {
+        if (match.externalId && match.sportName?.includes("축구")) {
+          const lineups = await fetchLineups(match.externalId);
+          const homeL = lineups.find((l) => l.team === match.homeTeam);
+          const awayL = lineups.find((l) => l.team === match.awayTeam);
+          if (homeL || awayL) {
+            await db.update(matches).set({
+              homeFormation: homeL?.formation ?? null,
+              awayFormation: awayL?.formation ?? null,
+              homeLineup: homeL?.startXI ?? null,
+              awayLineup: awayL?.startXI ?? null,
+            }).where(eq(matches.id, matchId));
+            lineupNote = `[실제 라인업] ${match.homeTeam}(${homeL?.formation ?? "미발표"}): ${(homeL?.startXI ?? []).map((p) => p.name).join(", ") || "아직 미발표"} / ${match.awayTeam}(${awayL?.formation ?? "미발표"}): ${(awayL?.startXI ?? []).map((p) => p.name).join(", ") || "아직 미발표"}`;
+          } else {
+            lineupNote = "[라인업] 아직 발표되지 않았습니다 (보통 킥오프 1시간 전 공개).";
+          }
+        }
+      } catch (e) {
+        console.warn(`[라인업 조회 실패] match=${matchId}:`, e);
+      }
+
+      // 2026 신규: 배당률 (베팅 유도 목적 아님 — 시장이 어느 쪽을 우세하게 보는지 참고 정보로만 프롬프트에 제공)
+      let oddsNote = "";
+      try {
+        if (match.externalId && match.sportName?.includes("축구")) {
+          const odds = await fetchOdds(match.externalId);
+          if (odds) {
+            await db.update(matches).set({ odds }).where(eq(matches.id, matchId));
+            oddsNote = `[시장 배당률 참고] ${odds.bookmaker} 기준 — 홈승 ${odds.homeWin ?? "-"} / 무 ${odds.draw ?? "-"} / 원정승 ${odds.awayWin ?? "-"} (낮을수록 시장이 유력하다고 보는 쪽)`;
+          }
+        }
+      } catch (e) {
+        console.warn(`[배당률 조회 실패] match=${matchId}:`, e);
+      }
+
+      // 2026 신규: 팀별 "홈경기 전체 성적" / "원정경기 전체 성적" (이 상대와 무관한 시즌 전체 기록)
+      const homeTeamHomeRecord = await getTeamHomeAwayRecord(match.homeTeam, "home", new Date(match.matchDate));
+      const awayTeamAwayRecord = await getTeamHomeAwayRecord(match.awayTeam, "away", new Date(match.matchDate));
+      const homeAwaySplitNote = `[홈/원정 스플릿] ${match.homeTeam}의 홈경기 성적: ${homeTeamHomeRecord.wins}승 ${homeTeamHomeRecord.draws}무 ${homeTeamHomeRecord.losses}패 (승률 ${homeTeamHomeRecord.winRate}%) / ${match.awayTeam}의 원정경기 성적: ${awayTeamAwayRecord.wins}승 ${awayTeamAwayRecord.draws}무 ${awayTeamAwayRecord.losses}패 (승률 ${awayTeamAwayRecord.winRate}%)`;
+
+      // 2026 신규: 경기 밀집도(피로도 신호) — 우리 DB 누적 데이터로 계산, 프롬프트에 주입 (전 종목 공통)
+      const homeCongestion = await getTeamFixtureCongestion(match.homeTeam, new Date(match.matchDate));
+      const awayCongestion = await getTeamFixtureCongestion(match.awayTeam, new Date(match.matchDate));
+      const b2b = (c: typeof homeCongestion) => c.isBackToBack ? " ⚠️백투백(전날경기)" : "";
+      const congestionNote = `[일정 밀집도] ${match.homeTeam}: 최근7일 ${homeCongestion.gamesLast7Days}경기/최근14일 ${homeCongestion.gamesLast14Days}경기/동시출전대회 ${homeCongestion.competitionsActive}개${b2b(homeCongestion)}, ${match.awayTeam}: 최근7일 ${awayCongestion.gamesLast7Days}경기/최근14일 ${awayCongestion.gamesLast14Days}경기/동시출전대회 ${awayCongestion.competitionsActive}개${b2b(awayCongestion)} (백투백 또는 3경기+/대회2개+ 시 로테이션·체력저하 가능성 높음 — 농구/하키는 백투백 영향이 특히 큼)`;
+
+      // 2026 신규: 최근폼 5/10/20경기 다단 구간 (여러 분석 소스 공통 컨센서스 — "최근폼"을 최우선 순위로 반영)
+      const homeForm = await getTeamFormMultiWindow(match.homeTeam, new Date(match.matchDate));
+      const awayForm = await getTeamFormMultiWindow(match.awayTeam, new Date(match.matchDate));
+      const fmtForm = (f: NonNullable<typeof homeForm>) => `5경기 ${f.last5.winRate}%/10경기 ${f.last10.winRate}%/20경기 ${f.last20.winRate}%`;
+      const formNote = homeForm && awayForm
+        ? `[최근 폼] ${match.homeTeam}: ${fmtForm(homeForm)}, ${match.awayTeam}: ${fmtForm(awayForm)} (단기 반등/슬럼프와 장기 실력을 구분해서 판단할 것 — 최근폼은 분석 시 최우선 고려 요소)`
+        : "";
+
+      const strategyPrompts: Record<string, string> = {
+        head_to_head: "당신은 상대전적 분석가입니다. 다음 항목을 반드시 구체적 수치와 함께 다루세요: ① 최근 5회 맞대결의 스코어라인과 결과 패턴(홈팀 강세/원정팀 강세/균형), ② 특정 시간대(전반/후반)에 반복되는 득실점 경향, ③ 이 매치업에서만 나타나는 전술적 상성(예: 특정 포메이션에 약한 팀), ④ 위 데이터가 이번 경기에 시사하는 바를 명확한 근거와 함께 결론.",
+        recent_form: "당신은 최근 폼 분석가입니다. 다음 항목을 반드시 구체적으로 다루세요: ① 최근 5·10·20경기 승률 수치를 비교해 단기 반등인지 장기 하락세인지 판단, ② 최근 경기들의 득점/실점 추이(상승세/하락세), ③ 연속 무패 또는 연속 무승부 등 특이 흐름, ④ 이 폼이 이번 경기에서 유지될 근거 또는 반전될 위험 요소.",
+        data_driven: "당신은 데이터 기반 분석가입니다. 다음 항목을 반드시 수치와 함께 다루세요: ① 양 팀의 평균 득점·실점·슈팅 효율 비교, ② 수비 조직력 지표(클린시트 비율 등), ③ 세트피스(코너킥·프리킥) 득점 관여도, ④ 이 통계적 우위가 실제 스코어라인으로 이어질 확률적 근거.",
+        fatigue_based: "당신은 컨디션·피로도 분석가입니다. 프롬프트에 주어진 [일정 밀집도] 데이터를 반드시 구체적 숫자(최근7일/14일 경기수, 동시출전대회 수, 백투백 여부)로 인용하며 다루세요: ① 두 팀의 일정 밀집도 수치 비교, ② 백투백 여부가 있다면 그로 인한 로테이션(주전 휴식) 가능성, ③ 주요 선수 결장 가능성이 경기력에 미칠 구체적 영향, ④ 피로도 열세인 쪽이 어떤 약점을 노출할지 예측.",
+        balanced: "당신은 수석 종합분석관입니다. 상대전적·최근폼·데이터·피로도 네 요소를 각각 최소 1문단씩 구체적 수치와 함께 다루고, 마지막 문단에서 어느 요소가 이번 경기의 승부처일지 종합 결론을 내리세요.",
+      };
+      const lengthRequirement = "\n\n[분량/품질 요구사항] fullAnalysis는 반드시 최소 5개 문단(문단당 3문장 이상)으로 작성하세요. 뻔한 일반론(\"두 팀 모두 좋은 경기력을 보여주고 있습니다\" 같은 표현) 금지 — 반드시 위에서 요청한 구체적 수치·근거를 인용하며 서술하세요. 다른 분석가와 똑같은 내용이 아니라, 당신의 전문 분야 관점에서만 볼 수 있는 통찰을 담으세요.";
+
+      let successCount = 0, failCount = 0, lastErrorMsg = "";
+
+      for (const bot of bots) {
+        const existing = await db.select().from(matchAnalysis).where(and(eq(matchAnalysis.botId, bot.id), eq(matchAnalysis.matchId, matchId))).limit(1);
+        if (existing.length > 0) { successCount++; continue; } // 캐시 재사용: 이미 생성된 조합은 다시 만들지 않음
+
+        const strategyGuide = strategyPrompts[bot.strategy] ?? strategyPrompts.balanced!;
+
+        const prompt = `${strategyGuide}${lengthRequirement}\n\n경기: ${matchInfo}\n리그: ${match.leagueName}\n언더오버 기준: ${match.overUnderLine}골\n${formNote}\n${congestionNote}\n${h2hNote}\n${homeAwaySplitNote}\n${injuriesNote}\n${lineupNote}\n${oddsNote}\n데이터: ${JSON.stringify(apiData)}\n\n다음 JSON 형식으로 반환하세요:\n{"summary":"핵심 요약 1-2문장","fullAnalysis":"상세 분석글 (최소 5문단, 문단당 3문장 이상, 구체적 수치 인용 필수, 위에 제공된 실제 라인업·부상자·배당률·홈원정스플릿 데이터를 반드시 근거로 활용)","keyStats":{"homeWinRate":60,"awayWinRate":30,"drawRate":10,"avgGoals":2.4,"notes":"주요 지표"},"finalPick":"home","finalPickType":"win_draw_lose","confidence":72}`;
+
+        // 2026: LLM 호출 실패 시 더 이상 가짜 기본문구로 채워 저장하지 않습니다.
+        // 실패한 봇은 그냥 건너뛰고(DB에 저장 안 함) → 다음에 "분석글 생성"을 다시 누르면
+        // (예: Claude API 키를 뒤늦게 설정한 뒤) 그 봇만 정상적으로 재시도됩니다.
+        try {
+          const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "analysis", strict: false, schema: { type: "object", properties: { summary: { type: "string" }, fullAnalysis: { type: "string" }, keyStats: { type: "object" }, finalPick: { type: "string" }, finalPickType: { type: "string" }, confidence: { type: "number" } }, required: ["summary", "fullAnalysis", "finalPick", "finalPickType", "confidence"], additionalProperties: true } } } });
+          const msgContent = response.choices?.[0]?.message?.content as string | undefined;
+          if (!msgContent) throw new Error("LLM 응답이 비어있습니다.");
+          const parsed = JSON.parse(msgContent);
+
+          const finalPick = ["home", "draw", "away", "over", "under"].includes(parsed.finalPick) ? parsed.finalPick : (bot._pickType === "under_over" ? "over" : "home");
+          const confidence = typeof parsed.confidence === "number" ? Math.min(99, Math.max(1, parsed.confidence)) : 65;
+
+          await db.insert(matchAnalysis).values({
+            matchId: matchId, botId: bot.id,
+            summary: parsed.summary ?? `${bot.name}의 분석`,
+            fullAnalysis: parsed.fullAnalysis ?? "",
+            keyStats: parsed.keyStats ?? {},
+            finalPick: bot._pickType === "under_over" ? (["over", "under"].includes(finalPick) ? finalPick : "over") : (["home", "draw", "away"].includes(finalPick) ? finalPick : "home"),
+            finalPickType: bot._pickType,
+            confidence: String(confidence),
+            generationSource: "on_demand",
+            status: "generated",
+          });
+          successCount++;
+        } catch (e: any) {
+          failCount++;
+          lastErrorMsg = e?.message ?? String(e);
+          console.error(`[분석글 생성 실패] bot=${bot.name} match=${matchId}:`, e);
+        }
+      }
+
+      if (successCount === 0 && failCount > 0) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `분석글 생성 전부 실패 (${failCount}건) — ${lastErrorMsg}` });
+      }
+      return { success: true, successCount, failCount };
 }
 
 export const appRouter = router({
@@ -153,7 +330,7 @@ export const appRouter = router({
   // ─── Matches ──────────────────────────────────────────────────────────────
   match: router({
     list: publicProcedure
-      .input(z.object({ leagueId: z.number().optional(), sportId: z.number().optional(), status: z.string().optional(), limit: z.number().optional() }).optional())
+      .input(z.object({ leagueId: z.number().optional(), sportId: z.number().optional(), status: z.string().optional(), limit: z.number().optional(), offset: z.number().optional(), todayOnly: z.boolean().optional(), sortDesc: z.boolean().optional() }).optional())
       .query(({ input }) => getMatches(input ?? {})),
     get: publicProcedure.input(z.object({ id: z.number() })).query(({ input }) => getMatchById(input.id)),
     getById: publicProcedure.input(z.object({ id: z.number() })).query(({ input }) => getMatchById(input.id)),
@@ -421,170 +598,43 @@ export const appRouter = router({
   analysis: router({
     list: publicProcedure.input(z.object({ matchId: z.number() })).query(({ input }) => getMatchAnalyses(input.matchId)),
     headToHead: publicProcedure.input(z.object({ matchId: z.number() })).query(({ input }) => getHeadToHead(input.matchId)),
+    // 2026 신규: 홈/원정 분리 상대전적 + 팀별 시즌 전체 홈/원정 기록 (탭 메뉴용)
+    matchStats: publicProcedure
+      .input(z.object({ matchId: z.number() }))
+      .query(async ({ input }) => {
+        const match = await getMatchById(input.matchId);
+        if (!match) return null;
+        const h2h = await getHeadToHead(input.matchId);
+        const h2hSplit = h2h ? splitH2hByVenue(h2h.records as any, match.homeTeam) : null;
+        const homeTeamHomeRecord = await getTeamHomeAwayRecord(match.homeTeam, "home", new Date(match.matchDate));
+        const awayTeamAwayRecord = await getTeamHomeAwayRecord(match.awayTeam, "away", new Date(match.matchDate));
+        const homeTeamAwayRecord = await getTeamHomeAwayRecord(match.homeTeam, "away", new Date(match.matchDate));
+        const awayTeamHomeRecord = await getTeamHomeAwayRecord(match.awayTeam, "home", new Date(match.matchDate));
+        return {
+          h2h, h2hSplit,
+          homeTeamHomeRecord, homeTeamAwayRecord, // 홈팀의 "홈에서" / "원정에서" 성적
+          awayTeamHomeRecord, awayTeamAwayRecord, // 원정팀의 "홈에서" / "원정에서" 성적
+          lineup: { homeFormation: match.homeFormation, awayFormation: match.awayFormation, homeLineup: match.homeLineup, awayLineup: match.awayLineup },
+          injuries: match.injuries,
+          odds: match.odds,
+          venue: match.venue,
+        };
+      }),
 
     generate: adminProcedure
       .input(z.object({ matchId: z.number() }))
-      .mutation(async ({ input }) => {
-        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const match = await getMatchById(input.matchId);
-        if (!match) throw new TRPCError({ code: "NOT_FOUND" });
-        const allBots = await getAllBots();
-        if (allBots.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "등록된 분석가가 없습니다." });
-
-        // 리그 등급별 생성량: 빅리그(major)=10명(승무패5+언더오버5), 비인기(minor)=4명(승무패2+언더오버2)
-        const leagueRow = await db.select().from(leagues).where(eq(leagues.id, match.leagueId)).limit(1);
-        const isMajor = leagueRow[0]?.tier === "major";
-        const wdlCount = isMajor ? 5 : 2;
-        const ouCount = isMajor ? 5 : 2;
-        const activeBots = allBots.filter((b: any) => b.isActive).slice(0, wdlCount + ouCount);
-        const bots = activeBots.map((b: any, i: number) => ({ ...b, _pickType: i < wdlCount ? "win_draw_lose" as const : "under_over" as const }));
-
-        const matchInfo = `${match.homeTeam} vs ${match.awayTeam} (${match.leagueName}, ${new Date(match.matchDate).toLocaleDateString("ko-KR")})`;
-        const apiData = (match.apiData as Record<string, unknown>) ?? {};
-
-        const h2hExisting = await getHeadToHead(input.matchId);
-        let h2hNote = "";
-        let injuriesNote = "";
-        if (!h2hExisting) {
-          try {
-            const apiTeams = (apiData as any)?.teams;
-            const homeTeamId = apiTeams?.home?.id;
-            const awayTeamId = apiTeams?.away?.id;
-            if (homeTeamId && awayTeamId && match.sportName?.includes("축구")) {
-              const realH2h = await fetchHeadToHead(homeTeamId, awayTeamId, 10);
-              if (realH2h.length > 0) {
-                const homeWins = realH2h.filter((r) => r.result === "home" && r.homeTeam === match.homeTeam).length
-                  + realH2h.filter((r) => r.result === "away" && r.awayTeam === match.homeTeam).length;
-                const awayWins = realH2h.filter((r) => r.result === "away" && r.awayTeam === match.awayTeam).length
-                  + realH2h.filter((r) => r.result === "home" && r.homeTeam === match.awayTeam).length;
-                const draws = realH2h.filter((r) => r.result === "draw").length;
-                const avgGoals = realH2h.reduce((s, r) => s + (r.homeScore ?? 0) + (r.awayScore ?? 0), 0) / realH2h.length;
-                await db.insert(headToHead).values({
-                  matchId: input.matchId, homeTeam: match.homeTeam, awayTeam: match.awayTeam,
-                  records: realH2h, totalGames: realH2h.length, homeWins, draws, awayWins, avgTotalGoals: avgGoals.toFixed(2),
-                });
-              }
-            }
-          } catch (e) {
-            console.warn(`[H2H 조회 실패] match=${input.matchId}:`, e);
-            // 상대전적 API 호출이 실패해도 분석글 생성 자체는 계속 진행 (h2h 없이)
-          }
-        }
-        const h2hData = await getHeadToHead(input.matchId);
-        if (h2hData) {
-          h2hNote = `[실제 상대전적] 최근 ${h2hData.totalGames}경기 — ${match.homeTeam} ${h2hData.homeWins}승 ${h2hData.draws}무 ${match.awayTeam} ${h2hData.awayWins}승, 경기당 평균 ${h2hData.avgTotalGoals}골. 세부 기록: ${JSON.stringify(h2hData.records).slice(0, 800)}`;
-        }
-
-        // 실제 부상자 명단 (축구, externalId 있는 경우만)
-        try {
-          if (match.externalId && match.sportName?.includes("축구")) {
-            const injuries = await fetchInjuries(match.externalId);
-            if (injuries.length > 0) {
-              injuriesNote = `[부상자 명단] ${injuries.map((i) => `${i.team} - ${i.player}(${i.type || i.reason})`).join(", ")}`;
-            }
-          }
-        } catch (e) {
-          console.warn(`[부상자 조회 실패] match=${input.matchId}:`, e);
-        }
-
-        // 2026 신규: 경기 밀집도(피로도 신호) — 우리 DB 누적 데이터로 계산, 프롬프트에 주입 (전 종목 공통)
-        const homeCongestion = await getTeamFixtureCongestion(match.homeTeam, new Date(match.matchDate));
-        const awayCongestion = await getTeamFixtureCongestion(match.awayTeam, new Date(match.matchDate));
-        const b2b = (c: typeof homeCongestion) => c.isBackToBack ? " ⚠️백투백(전날경기)" : "";
-        const congestionNote = `[일정 밀집도] ${match.homeTeam}: 최근7일 ${homeCongestion.gamesLast7Days}경기/최근14일 ${homeCongestion.gamesLast14Days}경기/동시출전대회 ${homeCongestion.competitionsActive}개${b2b(homeCongestion)}, ${match.awayTeam}: 최근7일 ${awayCongestion.gamesLast7Days}경기/최근14일 ${awayCongestion.gamesLast14Days}경기/동시출전대회 ${awayCongestion.competitionsActive}개${b2b(awayCongestion)} (백투백 또는 3경기+/대회2개+ 시 로테이션·체력저하 가능성 높음 — 농구/하키는 백투백 영향이 특히 큼)`;
-
-        // 2026 신규: 최근폼 5/10/20경기 다단 구간 (여러 분석 소스 공통 컨센서스 — "최근폼"을 최우선 순위로 반영)
-        const homeForm = await getTeamFormMultiWindow(match.homeTeam, new Date(match.matchDate));
-        const awayForm = await getTeamFormMultiWindow(match.awayTeam, new Date(match.matchDate));
-        const fmtForm = (f: NonNullable<typeof homeForm>) => `5경기 ${f.last5.winRate}%/10경기 ${f.last10.winRate}%/20경기 ${f.last20.winRate}%`;
-        const formNote = homeForm && awayForm
-          ? `[최근 폼] ${match.homeTeam}: ${fmtForm(homeForm)}, ${match.awayTeam}: ${fmtForm(awayForm)} (단기 반등/슬럼프와 장기 실력을 구분해서 판단할 것 — 최근폼은 분석 시 최우선 고려 요소)`
-          : "";
-
-        const strategyPrompts: Record<string, string> = {
-          head_to_head: "당신은 상대전적 분석가입니다. 다음 항목을 반드시 구체적 수치와 함께 다루세요: ① 최근 5회 맞대결의 스코어라인과 결과 패턴(홈팀 강세/원정팀 강세/균형), ② 특정 시간대(전반/후반)에 반복되는 득실점 경향, ③ 이 매치업에서만 나타나는 전술적 상성(예: 특정 포메이션에 약한 팀), ④ 위 데이터가 이번 경기에 시사하는 바를 명확한 근거와 함께 결론.",
-          recent_form: "당신은 최근 폼 분석가입니다. 다음 항목을 반드시 구체적으로 다루세요: ① 최근 5·10·20경기 승률 수치를 비교해 단기 반등인지 장기 하락세인지 판단, ② 최근 경기들의 득점/실점 추이(상승세/하락세), ③ 연속 무패 또는 연속 무승부 등 특이 흐름, ④ 이 폼이 이번 경기에서 유지될 근거 또는 반전될 위험 요소.",
-          data_driven: "당신은 데이터 기반 분석가입니다. 다음 항목을 반드시 수치와 함께 다루세요: ① 양 팀의 평균 득점·실점·슈팅 효율 비교, ② 수비 조직력 지표(클린시트 비율 등), ③ 세트피스(코너킥·프리킥) 득점 관여도, ④ 이 통계적 우위가 실제 스코어라인으로 이어질 확률적 근거.",
-          fatigue_based: "당신은 컨디션·피로도 분석가입니다. 프롬프트에 주어진 [일정 밀집도] 데이터를 반드시 구체적 숫자(최근7일/14일 경기수, 동시출전대회 수, 백투백 여부)로 인용하며 다루세요: ① 두 팀의 일정 밀집도 수치 비교, ② 백투백 여부가 있다면 그로 인한 로테이션(주전 휴식) 가능성, ③ 주요 선수 결장 가능성이 경기력에 미칠 구체적 영향, ④ 피로도 열세인 쪽이 어떤 약점을 노출할지 예측.",
-          balanced: "당신은 수석 종합분석관입니다. 상대전적·최근폼·데이터·피로도 네 요소를 각각 최소 1문단씩 구체적 수치와 함께 다루고, 마지막 문단에서 어느 요소가 이번 경기의 승부처일지 종합 결론을 내리세요.",
-        };
-        const lengthRequirement = "\n\n[분량/품질 요구사항] fullAnalysis는 반드시 최소 5개 문단(문단당 3문장 이상)으로 작성하세요. 뻔한 일반론(\"두 팀 모두 좋은 경기력을 보여주고 있습니다\" 같은 표현) 금지 — 반드시 위에서 요청한 구체적 수치·근거를 인용하며 서술하세요. 다른 분석가와 똑같은 내용이 아니라, 당신의 전문 분야 관점에서만 볼 수 있는 통찰을 담으세요.";
-
-        const defaultLineup = (team: string) => [
-          { name: `${team} GK`, position: "GK", number: 1 },
-          { name: `${team} DF1`, position: "DF", number: 2 },
-          { name: `${team} DF2`, position: "DF", number: 4 },
-          { name: `${team} DF3`, position: "DF", number: 5 },
-          { name: `${team} DF4`, position: "DF", number: 3 },
-          { name: `${team} MF1`, position: "MF", number: 6 },
-          { name: `${team} MF2`, position: "MF", number: 8 },
-          { name: `${team} MF3`, position: "MF", number: 10 },
-          { name: `${team} FW1`, position: "FW", number: 7 },
-          { name: `${team} FW2`, position: "FW", number: 9 },
-          { name: `${team} FW3`, position: "FW", number: 11 },
-        ];
-
-        let successCount = 0, failCount = 0, lastErrorMsg = "";
-
-        for (const bot of bots) {
-          const existing = await db.select().from(matchAnalysis).where(and(eq(matchAnalysis.botId, bot.id), eq(matchAnalysis.matchId, input.matchId))).limit(1);
-          if (existing.length > 0) { successCount++; continue; } // 캐시 재사용: 이미 생성된 조합은 다시 만들지 않음
-
-          const strategyGuide = strategyPrompts[bot.strategy] ?? strategyPrompts.balanced!;
-
-          const prompt = `${strategyGuide}${lengthRequirement}\n\n경기: ${matchInfo}\n리그: ${match.leagueName}\n언더오버 기준: ${match.overUnderLine}골\n${formNote}\n${congestionNote}\n${h2hNote}\n${injuriesNote}\n데이터: ${JSON.stringify(apiData)}\n\n다음 JSON 형식으로 반환하세요:\n{"summary":"핵심 요약 1-2문장","fullAnalysis":"상세 분석글 (최소 5문단, 문단당 3문장 이상, 구체적 수치 인용 필수)","homeFormation":"4-3-3","awayFormation":"4-2-3-1","homeLineup":[{"name":"선수명","position":"GK","number":1,"isCaptain":false}],"awayLineup":[{"name":"선수명","position":"GK","number":1,"isCaptain":false}],"keyStats":{"homeWinRate":60,"awayWinRate":30,"drawRate":10,"avgGoals":2.4,"notes":"주요 지표"},"finalPick":"home","finalPickType":"win_draw_lose","confidence":72}`;
-
-          // 2026: LLM 호출 실패 시 더 이상 가짜 기본문구로 채워 저장하지 않습니다.
-          // 실패한 봇은 그냥 건너뛰고(DB에 저장 안 함) → 다음에 "분석글 생성"을 다시 누르면
-          // (예: Claude API 키를 뒤늦게 설정한 뒤) 그 봇만 정상적으로 재시도됩니다.
-          try {
-            const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "analysis", strict: false, schema: { type: "object", properties: { summary: { type: "string" }, fullAnalysis: { type: "string" }, homeFormation: { type: "string" }, awayFormation: { type: "string" }, homeLineup: { type: "array", items: { type: "object" } }, awayLineup: { type: "array", items: { type: "object" } }, keyStats: { type: "object" }, finalPick: { type: "string" }, finalPickType: { type: "string" }, confidence: { type: "number" } }, required: ["summary", "fullAnalysis", "finalPick", "finalPickType", "confidence"], additionalProperties: true } } } });
-            const msgContent = response.choices?.[0]?.message?.content as string | undefined;
-            if (!msgContent) throw new Error("LLM 응답이 비어있습니다.");
-            const parsed = JSON.parse(msgContent);
-
-            const finalPick = ["home", "draw", "away", "over", "under"].includes(parsed.finalPick) ? parsed.finalPick : (bot._pickType === "under_over" ? "over" : "home");
-            const confidence = typeof parsed.confidence === "number" ? Math.min(99, Math.max(1, parsed.confidence)) : 65;
-
-            await db.insert(matchAnalysis).values({
-              matchId: input.matchId, botId: bot.id,
-              summary: parsed.summary ?? `${bot.name}의 분석`,
-              fullAnalysis: parsed.fullAnalysis ?? "",
-              homeFormation: parsed.homeFormation ?? null,
-              awayFormation: parsed.awayFormation ?? null,
-              homeLineup: Array.isArray(parsed.homeLineup) && parsed.homeLineup.length > 0 ? parsed.homeLineup : defaultLineup(match.homeTeam),
-              awayLineup: Array.isArray(parsed.awayLineup) && parsed.awayLineup.length > 0 ? parsed.awayLineup : defaultLineup(match.awayTeam),
-              keyStats: parsed.keyStats ?? {},
-              finalPick: bot._pickType === "under_over" ? (["over", "under"].includes(finalPick) ? finalPick : "over") : (["home", "draw", "away"].includes(finalPick) ? finalPick : "home"),
-              finalPickType: bot._pickType,
-              confidence: String(confidence),
-              generationSource: "on_demand",
-              status: "generated",
-            });
-            successCount++;
-          } catch (e: any) {
-            failCount++;
-            lastErrorMsg = e?.message ?? String(e);
-            console.error(`[분석글 생성 실패] bot=${bot.name} match=${input.matchId}:`, e);
-          }
-        }
-
-        if (successCount === 0 && failCount > 0) {
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `분석글 생성 전부 실패 (${failCount}건) — ${lastErrorMsg}` });
-        }
-        return { success: true, successCount, failCount };
-      }),
+      .mutation(({ input }) => generateAnalysisForMatch(input.matchId)),
 
     // 경기 클릭 시(사용자 최초 조회) 캐시가 없으면 생성 — 온디맨드 캐싱 전략의 핵심 엔드포인트
     ensureGenerated: publicProcedure
       .input(z.object({ matchId: z.number() }))
-      .mutation(async ({ input, ctx }) => {
+      .mutation(async ({ input }) => {
         const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         const existing = await db.select().from(matchAnalysis).where(eq(matchAnalysis.matchId, input.matchId)).limit(1);
         if (existing.length > 0) return { success: true, alreadyCached: true };
-        // 캐시가 없으면 generate와 동일 로직 실행 (관리자 권한 불필요 — 사용자 클릭이 트리거)
-        // 실제 구현 시 analysis.generate 내부 로직을 공용 함수로 추출해 여기서 재사용할 것.
-        return { success: true, alreadyCached: false, note: "TODO: generate 로직 공용 함수 추출 후 연결" };
+        // 캐시가 없으면 실제로 생성 (관리자 권한 불필요 — 사용자가 경기를 클릭한 게 트리거)
+        await generateAnalysisForMatch(input.matchId);
+        return { success: true, alreadyCached: false };
       }),
 
     // 빅리그 선제 생성 (킥오프 1~2시간 전, 스케줄러/heartbeat에서 호출)
@@ -595,8 +645,10 @@ export const appRouter = router({
       const upcomingMajor = await db.select({ id: matches.id }).from(matches)
         .innerJoin(leagues, eq(matches.leagueId, leagues.id))
         .where(and(eq(leagues.tier, "major"), eq(matches.status, "scheduled"), gte(matches.matchDate, now), lte(matches.matchDate, soon)));
-      // 각 경기에 대해 analysis.generate와 동일 로직 실행 필요 (공용 함수 추출 권장)
-      return { success: true, targetCount: upcomingMajor.length, note: "TODO: generate 로직 공용 함수 추출 후 연결" };
+      for (const m of upcomingMajor) {
+        try { await generateAnalysisForMatch(m.id); } catch (e) { console.error(`[선제생성 실패] matchId=${m.id}:`, e); }
+      }
+      return { success: true, targetCount: upcomingMajor.length };
     }),
 
     // 2026: 조회 포인트 제도 폐지 — 단순 인기도 카운트만 유지 (로그인 불필요, 부정방지 로직 불필요)
@@ -735,6 +787,10 @@ export const appRouter = router({
     }),
     // 2026 신규: 예정→진행중→종료 상태 자동 갱신 (서버가 5분마다 자동 실행 + 수동 버튼도 제공)
     refreshLiveMatches: adminProcedure.mutation(() => refreshLiveMatchStatuses()),
+    // 테스트/과거 데이터 정리 (예: 2024 파이프라인 검증용 데이터 일괄 삭제)
+    cleanupOldMatches: adminProcedure
+      .input(z.object({ beforeDate: z.string() }))
+      .mutation(({ input }) => deleteMatchesBefore(new Date(input.beforeDate))),
     settleMatch: adminProcedure
       .input(z.object({ matchId: z.number() }))
       .mutation(async ({ input, ctx }) => {

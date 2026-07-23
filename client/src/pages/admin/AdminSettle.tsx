@@ -16,7 +16,8 @@ const settleStatusInfo: Record<string, { label: string; color: string; icon: any
 
 export default function AdminSettle() {
   const utils = trpc.useUtils();
-  const { data: matches, isLoading } = trpc.match.list.useQuery({ status: "finished" });
+  const { data, isLoading } = trpc.match.list.useQuery({ status: "finished", limit: 100 });
+  const matches = data?.rows;
   const [editDialog, setEditDialog] = useState<{ open: boolean; data?: any }>({ open: false });
   const [scoreForm, setScoreForm] = useState<{ homeScore?: number; awayScore?: number }>({});
 

@@ -166,6 +166,35 @@ export async function fetchBaseballGameById(gameId: string): Promise<ApiBaseball
 
 
 
+// 배당률 (베팅 유도 목적이 아니라 "시장이 어느 쪽을 우세하게 보는지" 참고 정보로만 사용)
+export interface OddsInfo {
+  bookmaker: string;
+  homeWin: string | null;
+  draw: string | null;
+  awayWin: string | null;
+  over: string | null;
+  under: string | null;
+}
+export async function fetchOdds(fixtureId: string): Promise<OddsInfo | null> {
+  const url = `${FOOTBALL_BASE}/odds?fixture=${fixtureId}`;
+  const data = await apiSportsGet<{ response: any[] }>(url);
+  const first = data.response?.[0];
+  if (!first) return null;
+  const bookmaker = first.bookmakers?.[0];
+  if (!bookmaker) return null;
+  const matchWinnerBet = bookmaker.bets?.find((b: any) => b.name === "Match Winner");
+  const goalsBet = bookmaker.bets?.find((b: any) => b.name === "Goals Over/Under");
+  const findVal = (bet: any, label: string) => bet?.values?.find((v: any) => v.value === label)?.odd ?? null;
+  return {
+    bookmaker: bookmaker.name ?? "알수없음",
+    homeWin: findVal(matchWinnerBet, "Home"),
+    draw: findVal(matchWinnerBet, "Draw"),
+    awayWin: findVal(matchWinnerBet, "Away"),
+    over: goalsBet?.values?.[0]?.odd ?? null,
+    under: goalsBet?.values?.[1]?.odd ?? null,
+  };
+}
+
 export interface RealHeadToHead {
   date: string; homeTeam: string; awayTeam: string; homeScore: number | null; awayScore: number | null;
   result: "home" | "draw" | "away" | null; league: string;

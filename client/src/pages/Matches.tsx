@@ -30,11 +30,13 @@ export default function Matches() {
 
   const { data: sports } = trpc.sport.list.useQuery();
   const { data: leagues } = trpc.sport.leagues.useQuery({ sportId: selectedSport! }, { enabled: !!selectedSport });
-  const { data: allMatches, isLoading } = trpc.match.list.useQuery({
+  const { data: matchesData, isLoading } = trpc.match.list.useQuery({
     sportId: favoritesOnly ? undefined : (selectedSport ?? undefined),
     leagueId: selectedLeague ?? undefined,
     status: statusFilter === "all" ? undefined : statusFilter,
+    limit: 100,
   });
+  const allMatches = matchesData?.rows;
   // 즐겨찾기 모드일 땐 서버 필터 대신 클라이언트에서 즐겨찾기한 종목만 걸러냄
   const matches = favoritesOnly ? (allMatches ?? []).filter((m: any) => favorites.includes(m.sportId)) : allMatches;
 

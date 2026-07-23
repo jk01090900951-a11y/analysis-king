@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
 import { useParams, useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
-import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import { useExitInterstitial } from "@/components/ExitInterstitialAd";
+import MatchStatsTabs from "@/components/MatchStatsTabs";
 import {
   Trophy, ChevronDown, ChevronUp, Star,
   Shield, Zap, BarChart2, ArrowLeft
@@ -161,17 +161,24 @@ export default function MatchDetail() {
   const matchId = parseInt(id ?? "0");
   const [, navigate] = useLocation();
   const { triggerExit, AdOverlay } = useExitInterstitial();
-  const { isAdmin } = useAuth();
 
   const { data: match, isLoading: matchLoading } = trpc.match.getById.useQuery({ id: matchId }, { enabled: !!matchId });
-  const { data: analyses = [], refetch: refetchAnalyses } = trpc.analysis.list.useQuery({ matchId }, { enabled: !!matchId });
+  const { data: analyses = [], isLoading: analysesLoading, refetch: refetchAnalyses } = trpc.analysis.list.useQuery({ matchId }, { enabled: !!matchId });
   const { data: h2h } = trpc.analysis.headToHead.useQuery({ matchId }, { enabled: !!matchId });
 
-  const generateAnalysis = trpc.analysis.generate.useMutation({
-    onSuccess: () => { refetchAnalyses(); toast.success("분석글이 생성되었습니다."); },
-    onError: (e) => toast.error(e.message),
+  const ensureGenerated = trpc.analysis.ensureGenerated.useMutation({
+    onSuccess: (r) => { if (!r.alreadyCached) refetchAnalyses(); },
+    onError: () => {}, // 사용자 화면에는 실패를 노출하지 않음(관리자 로그에서 확인)
   });
   const incrementView = trpc.analysis.incrementView.useMutation();
+
+  // 분석글이 없는 경기를 열람하면 자동으로 분석가의 글을 불러옵니다 (관리자 수동 생성 버튼 없음)
+  useEffect(() => {
+    if (matchId && !analysesLoading && analyses.length === 0 && !ensureGenerated.isPending && !ensureGenerated.isSuccess) {
+      ensureGenerated.mutate({ matchId });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchId, analysesLoading, analyses.length]);
 
   useEffect(() => {
     if (matchId) incrementView.mutate({ matchId });
@@ -261,24 +268,19 @@ export default function MatchDetail() {
           )}
         </div>
 
+        {/* 경기 상세 정보 탭 (상대전적/팀기록/라인업/부상자/배당률) */}
+        <MatchStatsTabs matchId={matchId} homeTeam={match.homeTeam} awayTeam={match.awayTeam} />
+
         {/* 분석가 픽 섹션 */}
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <BarChart2 className="w-4 h-4 text-primary" />
-              <h2 className="font-bold text-sm">전문 분석가 5인의 픽</h2>
-            </div>
-            {isAdmin && (
-              <Button size="sm" variant="outline" onClick={() => generateAnalysis.mutate({ matchId })} disabled={generateAnalysis.isPending} className="text-xs h-7 border-primary/30 text-primary hover:bg-primary/10">
-                {generateAnalysis.isPending ? "생성 중..." : "✨ 분석 생성"}
-              </Button>
-            )}
+          <div className="flex items-center gap-2">
+            <BarChart2 className="w-4 h-4 text-primary" />
+            <h2 className="font-bold text-sm">스포츠전문분석 픽</h2>
           </div>
           {!hasAnalyses ? (
             <div className="rounded-xl border border-border/30 p-8 text-center space-y-3">
-              <div className="w-12 h-12 mx-auto rounded-full bg-primary/10 flex items-center justify-center"><Zap className="w-6 h-6 text-primary/50" /></div>
-              <p className="text-sm text-foreground/50">아직 분석글이 없습니다.</p>
-              {isAdmin && <Button size="sm" onClick={() => generateAnalysis.mutate({ matchId })} disabled={generateAnalysis.isPending} className="bg-primary/20 text-primary hover:bg-primary/30 border border-primary/30">{generateAnalysis.isPending ? "AI 분석 중..." : "분석글 생성하기"}</Button>}
+              <div className="w-12 h-12 mx-auto rounded-full bg-primary/10 flex items-center justify-center animate-pulse"><Zap className="w-6 h-6 text-primary/50" /></div>
+              <p className="text-sm text-foreground/50">분석가의 글을 불러오고 있습니다...</p>
             </div>
           ) : (
             <div className="space-y-3">
