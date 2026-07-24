@@ -1,5 +1,6 @@
 import { Link } from "wouter";
 import { Clock } from "lucide-react";
+import { formatLiveStatus } from "@/lib/matchStatus";
 
 interface LiveMatch {
   id: number;
@@ -9,6 +10,8 @@ interface LiveMatch {
   awayScore: number | null;
   matchDate: string;
   status: string;
+  statusLong?: string | null;
+  statusElapsed?: number | null;
   leagueName: string | null;
   sportIcon: string | null;
 }
@@ -29,7 +32,7 @@ export default function LiveScoreCarousel({ matches, isLoading }: { matches: Liv
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-muted-foreground truncate">{m.sportIcon} {m.leagueName}</span>
               {m.status === "live" ? (
-                <span className="text-xs font-bold text-red-500 flex items-center gap-1 shrink-0"><span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />LIVE</span>
+                <span className="text-xs font-bold text-red-500 flex items-center gap-1 shrink-0"><span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />{formatLiveStatus(m.status, m.statusLong ?? null, m.statusElapsed ?? null) || "LIVE"}</span>
               ) : (
                 <span className="text-xs text-muted-foreground flex items-center gap-1 shrink-0">
                   <Clock className="w-3 h-3" />
@@ -39,7 +42,11 @@ export default function LiveScoreCarousel({ matches, isLoading }: { matches: Liv
             </div>
             <div className="flex items-center justify-between text-sm font-medium">
               <span className="truncate flex-1">{m.homeTeam}</span>
-              <span className="mx-2 font-bold text-primary shrink-0">{m.homeScore ?? "-"} : {m.awayScore ?? "-"}</span>
+              <span className="mx-2 font-bold shrink-0 flex items-center gap-1">
+                <span className={m.homeScore != null && m.awayScore != null && m.homeScore > m.awayScore ? "text-red-500" : "text-primary"}>{m.homeScore ?? "-"}</span>
+                <span className="text-muted-foreground text-xs">:</span>
+                <span className={m.homeScore != null && m.awayScore != null && m.awayScore > m.homeScore ? "text-red-500" : "text-primary"}>{m.awayScore ?? "-"}</span>
+              </span>
               <span className="truncate flex-1 text-right">{m.awayTeam}</span>
             </div>
           </a>

@@ -18,11 +18,13 @@ const statusClass: Record<string, string> = { scheduled: "status-scheduled", liv
 export default function Home() {
   const [selectedSport, setSelectedSport] = useState<number | null>(null);
   
-  // 라이브 경기 데이터 쿼리 (오늘의 경기를 메인에서 강조 노출)
+  // 라이브 경기 데이터 쿼리 (오늘의 경기를 메인에서 강조 노출) — 진행중→예정 순, 지난 경기 제외
   const { data: liveData, isLoading: isLiveMatchesLoading } = trpc.match.list.useQuery({
     status: undefined, // 모든 상태
     limit: 30,
-  });
+    statusPriority: true,
+    excludeOldFinished: true,
+  }, { refetchInterval: 30000 }); // 라이브 스코어 자동 갱신
   const liveMatches = liveData?.rows ?? [];
 
   const todayStr = new Date().toDateString();
@@ -118,6 +120,8 @@ export default function Home() {
               awayScore: match.awayScore,
               matchDate: match.matchDate,
               status: match.status,
+              statusLong: match.statusLong,
+              statusElapsed: match.statusElapsed,
               leagueName: match.leagueName,
               sportIcon: match.sportIcon,
             }))}

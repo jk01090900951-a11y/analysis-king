@@ -1,5 +1,6 @@
 import { useParams, Link } from "wouter";
 import Navbar from "@/components/Navbar";
+import CategoryMenu from "@/components/CategoryMenu";
 import { trpc } from "@/lib/trpc";
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, Trophy } from "lucide-react";
@@ -15,6 +16,7 @@ export default function AnalystProfile() {
   return (
     <div>
       <Navbar />
+      <CategoryMenu />
       <div className="container py-6 max-w-2xl">
         <Link href="/bots"><a className="flex items-center gap-1 text-sm text-muted-foreground mb-4"><ArrowLeft className="w-4 h-4" />분석가 목록</a></Link>
         <div className="flex items-center gap-4 mb-6">

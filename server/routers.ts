@@ -1,8 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { and, eq, desc, gte, lte, sql, isNull, inArray } from "drizzle-orm";
-import { getDb, verifyLogin, getAllUsers, createAdmin, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getAllBots, getBotById, getBotPicksForMatch, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow, syncFootballFixturesForLeague, syncBaseballGamesForLeague, bulkImportLeagues, refreshLiveMatchStatuses, deleteMatchesBefore, getTeamHomeAwayRecord, splitH2hByVenue } from "./db";
-import { testApiSportsConnection, fetchCountries, searchLeaguesByCountry, SUPPORTED_SPORTS, fetchHeadToHead, fetchInjuries, fetchLineups, fetchOdds } from "./_core/apiSports";
+import { getDb, verifyLogin, getAllUsers, createAdmin, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getMatchIdsByFilter, getAllBots, getBotById, getBotPicksForMatch, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow, syncFootballFixturesForLeague, syncBaseballGamesForLeague, bulkImportLeagues, refreshLiveMatchStatuses, deleteMatchesBefore, getTeamHomeAwayRecord, splitH2hByVenue, getTeamRecentGamesList, getStandings, saveFetchedHistoricalFixture } from "./db";
+import { testApiSportsConnection, fetchCountries, searchLeaguesByCountry, SUPPORTED_SPORTS, fetchHeadToHead, fetchInjuries, fetchLineups, fetchOdds, fetchTeamStatistics, fetchTeamCoach, fetchCoachTrophies, fetchTeamTransfers, fetchTeamRecentFixtures } from "./_core/apiSports";
 import { users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory } from "../drizzle/schema";
 import { storagePut } from "./storage";
 import { COOKIE_NAME } from "@shared/const";
@@ -38,10 +38,164 @@ function parseLineupAppearances(apiData: Record<string, unknown>): {
 }
 
 // 분석글 생성 핵심 로직 — analysis.generate(관리자수동)/ensureGenerated(사용자자동)/prescheduleForMajorLeagues 공용
+// 2026 신규: 실제 API 상세데이터(H2H/부상자/라인업/배당률/홈원정스플릿) 수집 — 분석글 생성과 완전히 독립적으로 호출 가능
+// (예전엔 generateAnalysisForMatch 안에서만 실행돼서, 분석글 생성을 안 하면 이 데이터들도 영영 안 채워지는 문제가 있었음)
+export async function ensureMatchDetailData(matchId: number) {
+  const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+  const match = await getMatchById(matchId);
+  if (!match) throw new TRPCError({ code: "NOT_FOUND" });
+  const apiData = (match.apiData as Record<string, unknown>) ?? {};
+
+  const h2hExisting = await getHeadToHead(matchId);
+  let h2hNote = "";
+  let injuriesNote = "";
+  if (!h2hExisting) {
+    try {
+      const apiTeams = (apiData as any)?.teams;
+      const homeTeamId = apiTeams?.home?.id;
+      const awayTeamId = apiTeams?.away?.id;
+      if (homeTeamId && awayTeamId && match.sportName?.includes("축구")) {
+        const realH2h = await fetchHeadToHead(homeTeamId, awayTeamId, 10);
+        if (realH2h.length > 0) {
+          const homeWins = realH2h.filter((r) => r.result === "home" && r.homeTeam === match.homeTeam).length
+            + realH2h.filter((r) => r.result === "away" && r.awayTeam === match.homeTeam).length;
+          const awayWins = realH2h.filter((r) => r.result === "away" && r.awayTeam === match.awayTeam).length
+            + realH2h.filter((r) => r.result === "home" && r.homeTeam === match.awayTeam).length;
+          const draws = realH2h.filter((r) => r.result === "draw").length;
+          const avgGoals = realH2h.reduce((s, r) => s + (r.homeScore ?? 0) + (r.awayScore ?? 0), 0) / realH2h.length;
+          await db.insert(headToHead).values({
+            matchId: matchId, homeTeam: match.homeTeam, awayTeam: match.awayTeam,
+            records: realH2h, totalGames: realH2h.length, homeWins, draws, awayWins, avgTotalGoals: avgGoals.toFixed(2),
+          });
+        }
+      }
+    } catch (e) {
+      console.warn(`[H2H 조회 실패] match=${matchId}:`, e);
+    }
+  }
+  const h2hData = await getHeadToHead(matchId);
+  if (h2hData) {
+    h2hNote = `[실제 상대전적] 최근 ${h2hData.totalGames}경기 — ${match.homeTeam} ${h2hData.homeWins}승 ${h2hData.draws}무 ${match.awayTeam} ${h2hData.awayWins}승, 경기당 평균 ${h2hData.avgTotalGoals}골. 세부 기록: ${JSON.stringify(h2hData.records).slice(0, 800)}`;
+  }
+
+  // 실제 부상자 명단 (축구, externalId 있는 경우만) — 이미 저장돼있으면 재조회 안 함
+  try {
+    if (match.externalId && match.sportName?.includes("축구") && !match.injuries) {
+      const injuries = await fetchInjuries(match.externalId);
+      if (injuries.length > 0) {
+        injuriesNote = `[부상자 명단] ${injuries.map((i) => `${i.team} - ${i.player}(${i.type || i.reason})`).join(", ")}`;
+        await db.update(matches).set({ injuries }).where(eq(matches.id, matchId));
+      }
+    } else if (match.injuries) {
+      const injuries = match.injuries as { team: string; player: string; type: string; reason: string }[];
+      injuriesNote = `[부상자 명단] ${injuries.map((i) => `${i.team} - ${i.player}(${i.type || i.reason})`).join(", ")}`;
+    }
+  } catch (e) {
+    console.warn(`[부상자 조회 실패] match=${matchId}:`, e);
+  }
+
+  // 실제 라인업/포메이션 — 이미 저장돼있으면 재조회 안 함
+  let lineupNote = "";
+  try {
+    if (match.externalId && match.sportName?.includes("축구") && !match.homeLineup) {
+      const lineups = await fetchLineups(match.externalId);
+      const homeL = lineups.find((l) => l.team === match.homeTeam);
+      const awayL = lineups.find((l) => l.team === match.awayTeam);
+      if (homeL || awayL) {
+        await db.update(matches).set({
+          homeFormation: homeL?.formation ?? null,
+          awayFormation: awayL?.formation ?? null,
+          homeLineup: homeL?.startXI ?? null,
+          awayLineup: awayL?.startXI ?? null,
+        }).where(eq(matches.id, matchId));
+        lineupNote = `[실제 라인업] ${match.homeTeam}(${homeL?.formation ?? "미발표"}): ${(homeL?.startXI ?? []).map((p) => p.name).join(", ") || "아직 미발표"} / ${match.awayTeam}(${awayL?.formation ?? "미발표"}): ${(awayL?.startXI ?? []).map((p) => p.name).join(", ") || "아직 미발표"}`;
+      } else {
+        lineupNote = "[라인업] 아직 발표되지 않았습니다 (보통 킥오프 1시간 전 공개).";
+      }
+    }
+  } catch (e) {
+    console.warn(`[라인업 조회 실패] match=${matchId}:`, e);
+  }
+
+  // 배당률 — 이미 저장돼있으면 재조회 안 함
+  let oddsNote = "";
+  try {
+    if (match.externalId && match.sportName?.includes("축구") && !match.odds) {
+      const odds = await fetchOdds(match.externalId);
+      if (odds) {
+        await db.update(matches).set({ odds }).where(eq(matches.id, matchId));
+        oddsNote = `[시장 배당률 참고] ${odds.bookmaker} 기준 — 홈승 ${odds.homeWin ?? "-"} / 무 ${odds.draw ?? "-"} / 원정승 ${odds.awayWin ?? "-"} (낮을수록 시장이 유력하다고 보는 쪽)`;
+      }
+    }
+  } catch (e) {
+    console.warn(`[배당률 조회 실패] match=${matchId}:`, e);
+  }
+
+  // 2026 신규: 팀 시즌 통계 (득점/실점 평균, 클린시트 등) — 이미 저장돼있으면 재조회 안 함
+  let teamStatsNote = "";
+  try {
+    if (match.externalId && match.sportName?.includes("축구") && !match.homeTeamSeasonStats) {
+      const apiTeams = (apiData as any)?.teams;
+      const apiLeague = (apiData as any)?.league;
+      const homeTeamId = apiTeams?.home?.id;
+      const awayTeamId = apiTeams?.away?.id;
+      const leagueExternalId = apiLeague?.id;
+      const season = apiLeague?.season;
+      if (homeTeamId && awayTeamId && leagueExternalId && season) {
+        const [homeStats, awayStats] = await Promise.all([
+          fetchTeamStatistics(homeTeamId, String(leagueExternalId), season),
+          fetchTeamStatistics(awayTeamId, String(leagueExternalId), season),
+        ]);
+        await db.update(matches).set({ homeTeamSeasonStats: homeStats, awayTeamSeasonStats: awayStats }).where(eq(matches.id, matchId));
+        if (homeStats && awayStats) {
+          teamStatsNote = `[팀 시즌통계] ${match.homeTeam}: 경기당 평균 득점 ${homeStats.goalsForAvg ?? "-"}/실점 ${homeStats.goalsAgainstAvg ?? "-"}, 클린시트 ${homeStats.cleanSheets ?? "-"}회 / ${match.awayTeam}: 경기당 평균 득점 ${awayStats.goalsForAvg ?? "-"}/실점 ${awayStats.goalsAgainstAvg ?? "-"}, 클린시트 ${awayStats.cleanSheets ?? "-"}회`;
+        }
+      }
+    } else if (match.homeTeamSeasonStats && match.awayTeamSeasonStats) {
+      const h = match.homeTeamSeasonStats as any, a = match.awayTeamSeasonStats as any;
+      teamStatsNote = `[팀 시즌통계] ${match.homeTeam}: 경기당 평균 득점 ${h.goalsForAvg ?? "-"}/실점 ${h.goalsAgainstAvg ?? "-"}, 클린시트 ${h.cleanSheets ?? "-"}회 / ${match.awayTeam}: 경기당 평균 득점 ${a.goalsForAvg ?? "-"}/실점 ${a.goalsAgainstAvg ?? "-"}, 클린시트 ${a.cleanSheets ?? "-"}회`;
+    }
+  } catch (e) {
+    console.warn(`[팀 시즌통계 조회 실패] match=${matchId}:`, e);
+  }
+
+  // 2026 신규: 감독 정보 + 감독 우승기록 + 팀 이적기록 — 이미 저장돼있으면 재조회 안 함
+  try {
+    if (match.externalId && match.sportName?.includes("축구") && !match.homeCoach) {
+      const apiTeams = (apiData as any)?.teams;
+      const homeTeamId = apiTeams?.home?.id;
+      const awayTeamId = apiTeams?.away?.id;
+      if (homeTeamId && awayTeamId) {
+        const [homeCoach, awayCoach, homeTransfers, awayTransfers] = await Promise.all([
+          fetchTeamCoach(homeTeamId), fetchTeamCoach(awayTeamId),
+          fetchTeamTransfers(homeTeamId), fetchTeamTransfers(awayTeamId),
+        ]);
+        const [homeTrophies, awayTrophies] = await Promise.all([
+          homeCoach ? fetchCoachTrophies(homeCoach.id) : Promise.resolve([]),
+          awayCoach ? fetchCoachTrophies(awayCoach.id) : Promise.resolve([]),
+        ]);
+        await db.update(matches).set({
+          homeCoach, awayCoach,
+          homeCoachTrophies: homeTrophies, awayCoachTrophies: awayTrophies,
+          homeTeamTransfers: homeTransfers, awayTeamTransfers: awayTransfers,
+        }).where(eq(matches.id, matchId));
+      }
+    }
+  } catch (e) {
+    console.warn(`[감독/이적/우승기록 조회 실패] match=${matchId}:`, e);
+  }
+
+  // 팀별 "홈경기 전체 성적" / "원정경기 전체 성적" (우리 DB 자체 누적, API 호출 아님 — 항상 재계산)
+  const homeTeamHomeRecord = await getTeamHomeAwayRecord(match.homeTeam, "home", new Date(match.matchDate));
+  const awayTeamAwayRecord = await getTeamHomeAwayRecord(match.awayTeam, "away", new Date(match.matchDate));
+  const homeAwaySplitNote = `[홈/원정 스플릿] ${match.homeTeam}의 홈경기 성적: ${homeTeamHomeRecord.wins}승 ${homeTeamHomeRecord.draws}무 ${homeTeamHomeRecord.losses}패 (승률 ${homeTeamHomeRecord.winRate}%) / ${match.awayTeam}의 원정경기 성적: ${awayTeamAwayRecord.wins}승 ${awayTeamAwayRecord.draws}무 ${awayTeamAwayRecord.losses}패 (승률 ${awayTeamAwayRecord.winRate}%)`;
+
+  return { match, apiData, h2hNote, injuriesNote, lineupNote, oddsNote, teamStatsNote, homeAwaySplitNote };
+}
+
 async function generateAnalysisForMatch(matchId: number) {
       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      const match = await getMatchById(matchId);
-      if (!match) throw new TRPCError({ code: "NOT_FOUND" });
+      const { match, apiData, h2hNote, injuriesNote, lineupNote, oddsNote, teamStatsNote, homeAwaySplitNote } = await ensureMatchDetailData(matchId);
       const allBots = await getAllBots();
       if (allBots.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "등록된 분석가가 없습니다." });
 
@@ -54,95 +208,6 @@ async function generateAnalysisForMatch(matchId: number) {
       const bots = activeBots.map((b: any, i: number) => ({ ...b, _pickType: i < wdlCount ? "win_draw_lose" as const : "under_over" as const }));
 
       const matchInfo = `${match.homeTeam} vs ${match.awayTeam} (${match.leagueName}, ${new Date(match.matchDate).toLocaleDateString("ko-KR")})`;
-      const apiData = (match.apiData as Record<string, unknown>) ?? {};
-
-      const h2hExisting = await getHeadToHead(matchId);
-      let h2hNote = "";
-      let injuriesNote = "";
-      if (!h2hExisting) {
-        try {
-          const apiTeams = (apiData as any)?.teams;
-          const homeTeamId = apiTeams?.home?.id;
-          const awayTeamId = apiTeams?.away?.id;
-          if (homeTeamId && awayTeamId && match.sportName?.includes("축구")) {
-            const realH2h = await fetchHeadToHead(homeTeamId, awayTeamId, 10);
-            if (realH2h.length > 0) {
-              const homeWins = realH2h.filter((r) => r.result === "home" && r.homeTeam === match.homeTeam).length
-                + realH2h.filter((r) => r.result === "away" && r.awayTeam === match.homeTeam).length;
-              const awayWins = realH2h.filter((r) => r.result === "away" && r.awayTeam === match.awayTeam).length
-                + realH2h.filter((r) => r.result === "home" && r.homeTeam === match.awayTeam).length;
-              const draws = realH2h.filter((r) => r.result === "draw").length;
-              const avgGoals = realH2h.reduce((s, r) => s + (r.homeScore ?? 0) + (r.awayScore ?? 0), 0) / realH2h.length;
-              await db.insert(headToHead).values({
-                matchId: matchId, homeTeam: match.homeTeam, awayTeam: match.awayTeam,
-                records: realH2h, totalGames: realH2h.length, homeWins, draws, awayWins, avgTotalGoals: avgGoals.toFixed(2),
-              });
-            }
-          }
-        } catch (e) {
-          console.warn(`[H2H 조회 실패] match=${matchId}:`, e);
-          // 상대전적 API 호출이 실패해도 분석글 생성 자체는 계속 진행 (h2h 없이)
-        }
-      }
-      const h2hData = await getHeadToHead(matchId);
-      if (h2hData) {
-        h2hNote = `[실제 상대전적] 최근 ${h2hData.totalGames}경기 — ${match.homeTeam} ${h2hData.homeWins}승 ${h2hData.draws}무 ${match.awayTeam} ${h2hData.awayWins}승, 경기당 평균 ${h2hData.avgTotalGoals}골. 세부 기록: ${JSON.stringify(h2hData.records).slice(0, 800)}`;
-      }
-
-      // 실제 부상자 명단 (축구, externalId 있는 경우만)
-      try {
-        if (match.externalId && match.sportName?.includes("축구")) {
-          const injuries = await fetchInjuries(match.externalId);
-          if (injuries.length > 0) {
-            injuriesNote = `[부상자 명단] ${injuries.map((i) => `${i.team} - ${i.player}(${i.type || i.reason})`).join(", ")}`;
-            await db.update(matches).set({ injuries }).where(eq(matches.id, matchId));
-          }
-        }
-      } catch (e) {
-        console.warn(`[부상자 조회 실패] match=${matchId}:`, e);
-      }
-
-      // 2026 신규: 실제 라인업/포메이션 (AI가 지어내지 않고 API-Sports 실 데이터 저장)
-      let lineupNote = "";
-      try {
-        if (match.externalId && match.sportName?.includes("축구")) {
-          const lineups = await fetchLineups(match.externalId);
-          const homeL = lineups.find((l) => l.team === match.homeTeam);
-          const awayL = lineups.find((l) => l.team === match.awayTeam);
-          if (homeL || awayL) {
-            await db.update(matches).set({
-              homeFormation: homeL?.formation ?? null,
-              awayFormation: awayL?.formation ?? null,
-              homeLineup: homeL?.startXI ?? null,
-              awayLineup: awayL?.startXI ?? null,
-            }).where(eq(matches.id, matchId));
-            lineupNote = `[실제 라인업] ${match.homeTeam}(${homeL?.formation ?? "미발표"}): ${(homeL?.startXI ?? []).map((p) => p.name).join(", ") || "아직 미발표"} / ${match.awayTeam}(${awayL?.formation ?? "미발표"}): ${(awayL?.startXI ?? []).map((p) => p.name).join(", ") || "아직 미발표"}`;
-          } else {
-            lineupNote = "[라인업] 아직 발표되지 않았습니다 (보통 킥오프 1시간 전 공개).";
-          }
-        }
-      } catch (e) {
-        console.warn(`[라인업 조회 실패] match=${matchId}:`, e);
-      }
-
-      // 2026 신규: 배당률 (베팅 유도 목적 아님 — 시장이 어느 쪽을 우세하게 보는지 참고 정보로만 프롬프트에 제공)
-      let oddsNote = "";
-      try {
-        if (match.externalId && match.sportName?.includes("축구")) {
-          const odds = await fetchOdds(match.externalId);
-          if (odds) {
-            await db.update(matches).set({ odds }).where(eq(matches.id, matchId));
-            oddsNote = `[시장 배당률 참고] ${odds.bookmaker} 기준 — 홈승 ${odds.homeWin ?? "-"} / 무 ${odds.draw ?? "-"} / 원정승 ${odds.awayWin ?? "-"} (낮을수록 시장이 유력하다고 보는 쪽)`;
-          }
-        }
-      } catch (e) {
-        console.warn(`[배당률 조회 실패] match=${matchId}:`, e);
-      }
-
-      // 2026 신규: 팀별 "홈경기 전체 성적" / "원정경기 전체 성적" (이 상대와 무관한 시즌 전체 기록)
-      const homeTeamHomeRecord = await getTeamHomeAwayRecord(match.homeTeam, "home", new Date(match.matchDate));
-      const awayTeamAwayRecord = await getTeamHomeAwayRecord(match.awayTeam, "away", new Date(match.matchDate));
-      const homeAwaySplitNote = `[홈/원정 스플릿] ${match.homeTeam}의 홈경기 성적: ${homeTeamHomeRecord.wins}승 ${homeTeamHomeRecord.draws}무 ${homeTeamHomeRecord.losses}패 (승률 ${homeTeamHomeRecord.winRate}%) / ${match.awayTeam}의 원정경기 성적: ${awayTeamAwayRecord.wins}승 ${awayTeamAwayRecord.draws}무 ${awayTeamAwayRecord.losses}패 (승률 ${awayTeamAwayRecord.winRate}%)`;
 
       // 2026 신규: 경기 밀집도(피로도 신호) — 우리 DB 누적 데이터로 계산, 프롬프트에 주입 (전 종목 공통)
       const homeCongestion = await getTeamFixtureCongestion(match.homeTeam, new Date(match.matchDate));
@@ -167,6 +232,14 @@ async function generateAnalysisForMatch(matchId: number) {
       };
       const lengthRequirement = "\n\n[분량/품질 요구사항] fullAnalysis는 반드시 최소 5개 문단(문단당 3문장 이상)으로 작성하세요. 뻔한 일반론(\"두 팀 모두 좋은 경기력을 보여주고 있습니다\" 같은 표현) 금지 — 반드시 위에서 요청한 구체적 수치·근거를 인용하며 서술하세요. 다른 분석가와 똑같은 내용이 아니라, 당신의 전문 분야 관점에서만 볼 수 있는 통찰을 담으세요.";
 
+      // 2026 신규: 분석글 생성 정책 — 관리자가 날짜를 지정했으면, 그 이전 경기는 상세데이터만 저장하고
+      // AI 분석글(봇 글) 생성은 건너뜁니다 (테스트/과거 데이터에 비용 낭비 방지)
+      const cutoffSetting = await db.select().from(systemSettings).where(eq(systemSettings.key, "ai.generation_start_date")).limit(1);
+      const cutoffDate = cutoffSetting[0]?.value ? new Date(cutoffSetting[0].value) : null;
+      if (cutoffDate && new Date(match.matchDate) < cutoffDate) {
+        return { success: true, successCount: 0, failCount: 0, skipped: true, reason: `분석글 생성 시작일(${cutoffDate.toLocaleDateString("ko-KR")}) 이전 경기라 상세데이터만 저장하고 분석글은 생성하지 않았습니다.` };
+      }
+
       let successCount = 0, failCount = 0, lastErrorMsg = "";
 
       for (const bot of bots) {
@@ -175,7 +248,7 @@ async function generateAnalysisForMatch(matchId: number) {
 
         const strategyGuide = strategyPrompts[bot.strategy] ?? strategyPrompts.balanced!;
 
-        const prompt = `${strategyGuide}${lengthRequirement}\n\n경기: ${matchInfo}\n리그: ${match.leagueName}\n언더오버 기준: ${match.overUnderLine}골\n${formNote}\n${congestionNote}\n${h2hNote}\n${homeAwaySplitNote}\n${injuriesNote}\n${lineupNote}\n${oddsNote}\n데이터: ${JSON.stringify(apiData)}\n\n다음 JSON 형식으로 반환하세요:\n{"summary":"핵심 요약 1-2문장","fullAnalysis":"상세 분석글 (최소 5문단, 문단당 3문장 이상, 구체적 수치 인용 필수, 위에 제공된 실제 라인업·부상자·배당률·홈원정스플릿 데이터를 반드시 근거로 활용)","keyStats":{"homeWinRate":60,"awayWinRate":30,"drawRate":10,"avgGoals":2.4,"notes":"주요 지표"},"finalPick":"home","finalPickType":"win_draw_lose","confidence":72}`;
+        const prompt = `${strategyGuide}${lengthRequirement}\n\n경기: ${matchInfo}\n리그: ${match.leagueName}\n언더오버 기준: ${match.overUnderLine}골\n${formNote}\n${congestionNote}\n${h2hNote}\n${homeAwaySplitNote}\n${teamStatsNote}\n${injuriesNote}\n${lineupNote}\n${oddsNote}\n데이터: ${JSON.stringify(apiData)}\n\n다음 JSON 형식으로 반환하세요:\n{"summary":"핵심 요약 1-2문장","fullAnalysis":"상세 분석글 (최소 5문단, 문단당 3문장 이상, 구체적 수치 인용 필수, 위에 제공된 실제 라인업·부상자·배당률·홈원정스플릿·팀시즌통계 데이터를 반드시 근거로 활용)","keyStats":{"homeWinRate":60,"awayWinRate":30,"drawRate":10,"avgGoals":2.4,"notes":"주요 지표"},"finalPick":"home","finalPickType":"win_draw_lose","confidence":72}`;
 
         // 2026: LLM 호출 실패 시 더 이상 가짜 기본문구로 채워 저장하지 않습니다.
         // 실패한 봇은 그냥 건너뛰고(DB에 저장 안 함) → 다음에 "분석글 생성"을 다시 누르면
@@ -212,6 +285,82 @@ async function generateAnalysisForMatch(matchId: number) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `분석글 생성 전부 실패 (${failCount}건) — ${lastErrorMsg}` });
       }
       return { success: true, successCount, failCount };
+}
+
+// 경기 정산 핵심 로직 — match.settle(관리자수동)/admin.settleMatch 공용
+async function settleMatchLogic(matchId: number, homeScore: number, awayScore: number) {
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const match = await getMatchById(matchId);
+      if (!match) throw new TRPCError({ code: "NOT_FOUND" });
+
+      const totalGoals = homeScore + awayScore;
+      const result = homeScore > awayScore ? "home" : homeScore < awayScore ? "away" : "draw";
+      const ouLine = Number(match.overUnderLine ?? 2.5);
+      const ouResult = totalGoals > ouLine ? "over" : "under";
+
+      // 경기 결과 업데이트
+      await db.update(matches).set({ homeScore, awayScore, result, totalGoals, status: "finished" }).where(eq(matches.id, matchId));
+
+      // 2026 신규: 종목별 피로도 데이터 자동 누적 (외부 API 의존 최소화, match.apiData 원본에서 파싱)
+      // TODO: parsePitcherBoxScores/parseLineupAppearances는 API-Sports 실제 응답 필드명에 맞춘
+      //       어댑터 함수로 구현 필요 (아래는 자리만 잡아둔 상태 — apiData가 비어있으면 스킵됨)
+      if (match.sportName?.includes("야구") && match.apiData) {
+        const pitchers = parsePitcherBoxScores(match.apiData as Record<string, unknown>);
+        if (pitchers.length > 0) await recordPitcherStarts(matchId, match.matchDate, pitchers);
+      }
+      if (match.sportName?.includes("축구") && match.apiData) {
+        const appearances = parseLineupAppearances(match.apiData as Record<string, unknown>);
+        if (appearances.length > 0) await recordPlayerAppearances(matchId, match.matchDate, appearances);
+      }
+
+      // 봇 픽 정산
+      const allBotPicks = await db.select().from(botPicks).where(eq(botPicks.matchId, matchId));
+      for (const pick of allBotPicks) {
+        let isCorrect = false;
+        if (pick.pickType === "win_draw_lose") isCorrect = pick.wdlPick === result;
+        else if (pick.pickType === "under_over") isCorrect = pick.ouPick === ouResult;
+        await db.update(botPicks).set({ isCorrect, isSettled: true }).where(eq(botPicks.id, pick.id));
+      }
+
+      // 봇 승률 업데이트
+      const allBots = await db.select().from(aiBots);
+      for (const bot of allBots) {
+        const botPickList = await db.select().from(botPicks).where(eq(botPicks.botId, bot.id));
+        const settled = botPickList.filter(p => p.isSettled);
+        const correct = settled.filter(p => p.isCorrect);
+        const winRate = settled.length > 0 ? ((correct.length / settled.length) * 100).toFixed(2) : "0.00";
+        await db.update(aiBots).set({ totalPicks: settled.length, correctPicks: correct.length, winRate }).where(eq(aiBots.id, bot.id));
+      }
+
+      // 봇 연승 업데이트
+      for (const bot of allBots) {
+        const botPickList = await db.select().from(botPicks).where(eq(botPicks.botId, bot.id)).orderBy(desc(botPicks.createdAt));
+        let currentStreak = 0;
+        for (const pick of botPickList) {
+          if (pick.isSettled && pick.isCorrect) {
+            currentStreak++;
+          } else {
+            break;
+          }
+        }
+        const newMaxStreak = Math.max(currentStreak, bot.maxStreak ?? 0);
+        await db.update(aiBots).set({ currentStreak, maxStreak: newMaxStreak }).where(eq(aiBots.id, bot.id));
+      }
+
+      // 봇 순위 재계산 (승률 기준)
+      const updatedBots = await db.select().from(aiBots).where(eq(aiBots.isActive, true));
+      const sorted = [...updatedBots].sort((a, b) => Number(b.winRate) - Number(a.winRate));
+      for (let i = 0; i < sorted.length; i++) {
+        await db.update(aiBots).set({ currentRank: i + 1 }).where(eq(aiBots.id, sorted[i]!.id));
+      }
+
+      // 경기 정산 상태 갱신 (AdminSettle.tsx 표시용) — 2026: 개인 예측/포인트 정산 폐지, 봇 승률만 갱신
+      await db.update(matches).set({
+        settleStatus: "settled",
+        settledAt: new Date(),
+      }).where(eq(matches.id, matchId));
+
+      return { success: true, result, ouResult };
 }
 
 export const appRouter = router({
@@ -294,6 +443,10 @@ export const appRouter = router({
     syncBaseballGames: adminProcedure
       .input(z.object({ leagueId: z.number(), season: z.number().default(new Date().getFullYear()) }))
       .mutation(({ input }) => syncBaseballGamesForLeague(input.leagueId, input.season)),
+    // 2026 신규: 리그 순위표 (공개조회, 6시간 캐시)
+    standings: publicProcedure
+      .input(z.object({ leagueId: z.number(), season: z.number().default(new Date().getFullYear()) }))
+      .query(({ input }) => getStandings(input.leagueId, input.season)),
     // 나라별 리그 대량 가져오기 (2026 신규)
     supportedSports: adminProcedure.query(() => SUPPORTED_SPORTS),
     countries: adminProcedure
@@ -330,8 +483,12 @@ export const appRouter = router({
   // ─── Matches ──────────────────────────────────────────────────────────────
   match: router({
     list: publicProcedure
-      .input(z.object({ leagueId: z.number().optional(), sportId: z.number().optional(), status: z.string().optional(), limit: z.number().optional(), offset: z.number().optional(), todayOnly: z.boolean().optional(), sortDesc: z.boolean().optional() }).optional())
+      .input(z.object({ leagueId: z.number().optional(), sportId: z.number().optional(), status: z.string().optional(), limit: z.number().optional(), offset: z.number().optional(), todayOnly: z.boolean().optional(), sortDesc: z.boolean().optional(), date: z.string().optional(), excludeOldFinished: z.boolean().optional(), statusPriority: z.boolean().optional() }).optional())
       .query(({ input }) => getMatches(input ?? {})),
+    // 2026 신규: 관리자 화면에서 "전체 선택"(페이지네이션 무관)을 위한 경량 ID 목록 조회
+    allIds: adminProcedure
+      .input(z.object({ leagueId: z.number().optional(), sportId: z.number().optional(), status: z.string().optional(), todayOnly: z.boolean().optional() }).optional())
+      .query(({ input }) => getMatchIdsByFilter(input ?? {})),
     get: publicProcedure.input(z.object({ id: z.number() })).query(({ input }) => getMatchById(input.id)),
     getById: publicProcedure.input(z.object({ id: z.number() })).query(({ input }) => getMatchById(input.id)),
 
@@ -381,81 +538,7 @@ export const appRouter = router({
         homeScore: z.number(),
         awayScore: z.number(),
       }))
-      .mutation(async ({ input }) => {
-        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const match = await getMatchById(input.matchId);
-        if (!match) throw new TRPCError({ code: "NOT_FOUND" });
-
-        const { homeScore, awayScore } = input;
-        const totalGoals = homeScore + awayScore;
-        const result = homeScore > awayScore ? "home" : homeScore < awayScore ? "away" : "draw";
-        const ouLine = Number(match.overUnderLine ?? 2.5);
-        const ouResult = totalGoals > ouLine ? "over" : "under";
-
-        // 경기 결과 업데이트
-        await db.update(matches).set({ homeScore, awayScore, result, totalGoals, status: "finished" }).where(eq(matches.id, input.matchId));
-
-        // 2026 신규: 종목별 피로도 데이터 자동 누적 (외부 API 의존 최소화, match.apiData 원본에서 파싱)
-        // TODO: parsePitcherBoxScores/parseLineupAppearances는 API-Sports 실제 응답 필드명에 맞춘
-        //       어댑터 함수로 구현 필요 (아래는 자리만 잡아둔 상태 — apiData가 비어있으면 스킵됨)
-        if (match.sportName?.includes("야구") && match.apiData) {
-          const pitchers = parsePitcherBoxScores(match.apiData as Record<string, unknown>);
-          if (pitchers.length > 0) await recordPitcherStarts(input.matchId, match.matchDate, pitchers);
-        }
-        if (match.sportName?.includes("축구") && match.apiData) {
-          const appearances = parseLineupAppearances(match.apiData as Record<string, unknown>);
-          if (appearances.length > 0) await recordPlayerAppearances(input.matchId, match.matchDate, appearances);
-        }
-
-        // 봇 픽 정산
-        const allBotPicks = await db.select().from(botPicks).where(eq(botPicks.matchId, input.matchId));
-        for (const pick of allBotPicks) {
-          let isCorrect = false;
-          if (pick.pickType === "win_draw_lose") isCorrect = pick.wdlPick === result;
-          else if (pick.pickType === "under_over") isCorrect = pick.ouPick === ouResult;
-          await db.update(botPicks).set({ isCorrect, isSettled: true }).where(eq(botPicks.id, pick.id));
-        }
-
-        // 봇 승률 업데이트
-        const allBots = await db.select().from(aiBots);
-        for (const bot of allBots) {
-          const botPickList = await db.select().from(botPicks).where(eq(botPicks.botId, bot.id));
-          const settled = botPickList.filter(p => p.isSettled);
-          const correct = settled.filter(p => p.isCorrect);
-          const winRate = settled.length > 0 ? ((correct.length / settled.length) * 100).toFixed(2) : "0.00";
-          await db.update(aiBots).set({ totalPicks: settled.length, correctPicks: correct.length, winRate }).where(eq(aiBots.id, bot.id));
-        }
-
-        // 봇 연승 업데이트
-        for (const bot of allBots) {
-          const botPickList = await db.select().from(botPicks).where(eq(botPicks.botId, bot.id)).orderBy(desc(botPicks.createdAt));
-          let currentStreak = 0;
-          for (const pick of botPickList) {
-            if (pick.isSettled && pick.isCorrect) {
-              currentStreak++;
-            } else {
-              break;
-            }
-          }
-          const newMaxStreak = Math.max(currentStreak, bot.maxStreak ?? 0);
-          await db.update(aiBots).set({ currentStreak, maxStreak: newMaxStreak }).where(eq(aiBots.id, bot.id));
-        }
-
-        // 봇 순위 재계산 (승률 기준)
-        const updatedBots = await db.select().from(aiBots).where(eq(aiBots.isActive, true));
-        const sorted = [...updatedBots].sort((a, b) => Number(b.winRate) - Number(a.winRate));
-        for (let i = 0; i < sorted.length; i++) {
-          await db.update(aiBots).set({ currentRank: i + 1 }).where(eq(aiBots.id, sorted[i]!.id));
-        }
-
-        // 경기 정산 상태 갱신 (AdminSettle.tsx 표시용) — 2026: 개인 예측/포인트 정산 폐지, 봇 승률만 갱신
-        await db.update(matches).set({
-          settleStatus: "settled",
-          settledAt: new Date(),
-        }).where(eq(matches.id, input.matchId));
-
-        return { success: true, result, ouResult };
-      }),
+      .mutation(({ input }) => settleMatchLogic(input.matchId, input.homeScore, input.awayScore)),
   }),
 
   // ─── AI Bots ──────────────────────────────────────────────────────────────
@@ -610,14 +693,66 @@ export const appRouter = router({
         const awayTeamAwayRecord = await getTeamHomeAwayRecord(match.awayTeam, "away", new Date(match.matchDate));
         const homeTeamAwayRecord = await getTeamHomeAwayRecord(match.homeTeam, "away", new Date(match.matchDate));
         const awayTeamHomeRecord = await getTeamHomeAwayRecord(match.awayTeam, "home", new Date(match.matchDate));
+
+        // 2026 신규: 와이즈토토 스타일 — 전체/홈/원정 탭에 실제 최근 경기 리스트 (각 5경기)
+        const asOf = new Date(match.matchDate);
+        let [homeTeamAllGames, awayTeamAllGames, homeTeamHomeGames, awayTeamAwayGames] = await Promise.all([
+          getTeamRecentGamesList(match.homeTeam, "all", asOf, 5),
+          getTeamRecentGamesList(match.awayTeam, "all", asOf, 5),
+          getTeamRecentGamesList(match.homeTeam, "home", asOf, 5),
+          getTeamRecentGamesList(match.awayTeam, "away", asOf, 5),
+        ]);
+
+        // 우리 DB 누적이 아직 적은 리그(막 추적 시작한 리그 등)는 API에서 직접 팀 최근경기를 가져와 보완
+        try {
+          const apiTeams = (match.apiData as any)?.teams;
+          const homeTeamId = apiTeams?.home?.id;
+          const awayTeamId = apiTeams?.away?.id;
+          const toGameRow = (f: { date: string; homeTeam: string; awayTeam: string; homeScore: number | null; awayScore: number | null; league: string }, teamName: string, idx: number) => {
+            const isHome = f.homeTeam === teamName;
+            const teamScore = isHome ? f.homeScore : f.awayScore;
+            const oppScore = isHome ? f.awayScore : f.homeScore;
+            const outcome: "win" | "draw" | "loss" | null = teamScore == null || oppScore == null ? null : teamScore === oppScore ? "draw" : teamScore > oppScore ? "win" : "loss";
+            return { id: -1000 - idx, date: new Date(f.date), isHome, opponent: isHome ? f.awayTeam : f.homeTeam, teamScore, oppScore, outcome, leagueName: f.league };
+          };
+          if (homeTeamAllGames.length < 3 && homeTeamId) {
+            const fresh = await fetchTeamRecentFixtures(homeTeamId, 5);
+            homeTeamAllGames = fresh.map((f, i) => toGameRow(f, match.homeTeam, i));
+            homeTeamHomeGames = fresh.filter((f) => f.homeTeam === match.homeTeam).map((f, i) => toGameRow(f, match.homeTeam, i));
+            // 화면에만 잠깐 보여주고 버리지 않고, 우리 DB에도 실제로 저장 (다음부터는 API 재호출 없이 우리 데이터에서 바로 나옴)
+            for (const f of fresh) { await saveFetchedHistoricalFixture(f); }
+          }
+          if (awayTeamAllGames.length < 3 && awayTeamId) {
+            const fresh = await fetchTeamRecentFixtures(awayTeamId, 5);
+            awayTeamAllGames = fresh.map((f, i) => toGameRow(f, match.awayTeam, i));
+            awayTeamAwayGames = fresh.filter((f) => f.awayTeam === match.awayTeam).map((f, i) => toGameRow(f, match.awayTeam, i));
+            for (const f of fresh) { await saveFetchedHistoricalFixture(f); }
+          }
+        } catch (e) {
+          console.warn(`[팀 최근경기 API 보완 실패] match=${input.matchId}:`, e);
+        }
+
         return {
           h2h, h2hSplit,
           homeTeamHomeRecord, homeTeamAwayRecord, // 홈팀의 "홈에서" / "원정에서" 성적
           awayTeamHomeRecord, awayTeamAwayRecord, // 원정팀의 "홈에서" / "원정에서" 성적
+          recentGames: { homeTeamAllGames, awayTeamAllGames, homeTeamHomeGames, awayTeamAwayGames },
           lineup: { homeFormation: match.homeFormation, awayFormation: match.awayFormation, homeLineup: match.homeLineup, awayLineup: match.awayLineup },
           injuries: match.injuries,
           odds: match.odds,
           venue: match.venue,
+          events: match.events,
+          fixtureStats: match.matchStats,
+          playerStats: match.playerStats,
+          homeTeamSeasonStats: match.homeTeamSeasonStats,
+          awayTeamSeasonStats: match.awayTeamSeasonStats,
+          homeCoach: match.homeCoach,
+          awayCoach: match.awayCoach,
+          homeCoachTrophies: match.homeCoachTrophies,
+          awayCoachTrophies: match.awayCoachTrophies,
+          homeTeamTransfers: match.homeTeamTransfers,
+          awayTeamTransfers: match.awayTeamTransfers,
+          leagueId: match.leagueId,
         };
       }),
 
@@ -635,6 +770,13 @@ export const appRouter = router({
         // 캐시가 없으면 실제로 생성 (관리자 권한 불필요 — 사용자가 경기를 클릭한 게 트리거)
         await generateAnalysisForMatch(input.matchId);
         return { success: true, alreadyCached: false };
+      }),
+    // 2026 신규: 분석글 생성과 완전히 독립적으로 H2H/라인업/부상자/배당률만 확보 (사용자가 경기를 열면 자동 호출)
+    ensureMatchDetails: publicProcedure
+      .input(z.object({ matchId: z.number() }))
+      .mutation(async ({ input }) => {
+        await ensureMatchDetailData(input.matchId);
+        return { success: true };
       }),
 
     // 빅리그 선제 생성 (킥오프 1~2시간 전, 스케줄러/heartbeat에서 호출)
@@ -764,7 +906,12 @@ export const appRouter = router({
         if (input.cooldownSec !== undefined) updates.push(["ad.interstitial_cooldown_sec", String(input.cooldownSec)]);
         if (input.maxPerHour !== undefined) updates.push(["ad.interstitial_max_per_hour", String(input.maxPerHour)]);
         for (const [key, value] of updates) {
-          await db.update(systemSettings).set({ value }).where(eq(systemSettings.key, key));
+          const exists = await db.select().from(systemSettings).where(eq(systemSettings.key, key)).limit(1);
+          if (exists.length > 0) {
+            await db.update(systemSettings).set({ value }).where(eq(systemSettings.key, key));
+          } else {
+            await db.insert(systemSettings).values({ key, value });
+          }
         }
         return { success: true };
       }),
@@ -791,14 +938,51 @@ export const appRouter = router({
     cleanupOldMatches: adminProcedure
       .input(z.object({ beforeDate: z.string() }))
       .mutation(({ input }) => deleteMatchesBefore(new Date(input.beforeDate))),
+    // 2026 신규: 분석글 생성 정책 (테스트 종료 후 "미래 경기만 생성"으로 전환용)
+    getGenerationPolicy: adminProcedure.query(async () => {
+      const db = await getDb(); if (!db) return { startDate: "" };
+      const row = await db.select().from(systemSettings).where(eq(systemSettings.key, "ai.generation_start_date")).limit(1);
+      return { startDate: row[0]?.value ?? "" };
+    }),
+    updateGenerationPolicy: adminProcedure
+      .input(z.object({ startDate: z.string() })) // 빈 문자열 = 테스트모드(전체 허용)
+      .mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const exists = await db.select().from(systemSettings).where(eq(systemSettings.key, "ai.generation_start_date")).limit(1);
+        if (exists.length > 0) {
+          await db.update(systemSettings).set({ value: input.startDate }).where(eq(systemSettings.key, "ai.generation_start_date"));
+        } else {
+          await db.insert(systemSettings).values({ key: "ai.generation_start_date", value: input.startDate, description: "이 날짜 이후 경기만 분석글 생성 (빈 값=테스트모드, 전체 허용)" });
+        }
+        return { success: true };
+      }),
+    // 지정한 날짜 이전 경기에 이미 생성된 분석글(봇 글)만 삭제 — 경기 자체나 상세데이터(라인업 등)는 유지
+    cleanupOldAnalyses: adminProcedure
+      .input(z.object({ beforeDate: z.string() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const before = new Date(input.beforeDate);
+        const targets = await db.select({ id: matches.id }).from(matches).where(lte(matches.matchDate, before));
+        if (targets.length === 0) return { deleted: 0 };
+        const ids = targets.map((t) => t.id);
+        const result = await db.delete(matchAnalysis).where(inArray(matchAnalysis.matchId, ids));
+        return { deleted: ids.length };
+      }),
+    // 2026 신규: 날짜 무관하게 지금까지 생성된 분석글·픽을 전부 삭제 (예전 가짜 라인업 등으로 오염된 데이터 완전 초기화용)
+    wipeAllAnalyses: adminProcedure.mutation(async () => {
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const [analysisCount] = await db.select({ count: sql<number>`count(*)` }).from(matchAnalysis);
+      const [pickCount] = await db.select({ count: sql<number>`count(*)` }).from(botPicks);
+      await db.delete(matchAnalysis);
+      await db.delete(botPicks);
+      return { deletedAnalyses: Number(analysisCount?.count ?? 0), deletedPicks: Number(pickCount?.count ?? 0) };
+    }),
     settleMatch: adminProcedure
       .input(z.object({ matchId: z.number() }))
-      .mutation(async ({ input, ctx }) => {
-        // match.settle과 동일 로직 재사용 (AdminSettle.tsx 명명 편의를 위한 별칭)
-        // 실제 구현 시 match.settle 내부 로직을 공용 함수로 추출해 여기서 재사용할 것.
+      .mutation(async ({ input }) => {
         const match = await getMatchById(input.matchId);
         if (!match || match.homeScore == null || match.awayScore == null) throw new TRPCError({ code: "BAD_REQUEST", message: "홈/원정 스코어가 아직 입력되지 않았습니다." });
-        throw new TRPCError({ code: "NOT_IMPLEMENTED", message: "TODO: match.settle 로직을 공용 함수로 추출 후 { matchId, homeScore: match.homeScore, awayScore: match.awayScore }로 호출 연결" });
+        return settleMatchLogic(input.matchId, match.homeScore, match.awayScore);
       }),
 
     // 초기 데이터 시딩
@@ -812,6 +996,8 @@ export const appRouter = router({
         { key: "ad.banner_enabled", value: "true", description: "배너 광고 노출 여부 (관리자 화면에서 ON/OFF)" },
         { key: "ad.interstitial_enabled", value: "true", description: "이탈 시 전면광고 노출 여부 (관리자 화면에서 ON/OFF)" },
         { key: "ad.rewarded_optout_hours", value: "1.5", description: "리워드광고 시청 후 광고면제 시간 (브라우저 쿠키 기반, 로그인 불필요)" },
+        // 2026 신규: 분석글(AI 글) 생성 정책 — 빈 값이면 테스트모드(전체 허용), 날짜 지정 시 그 날짜 이후 경기만 생성
+        { key: "ai.generation_start_date", value: "", description: "이 날짜 이후 경기만 분석글 생성 (빈 값=테스트모드, 전체 허용)" },
         // 야구 투수 피로도 점수제 임계값 (앞으로 조건 추가/조정은 이 표에 행만 추가하면 됨)
         { key: "fatigue.heavy_pitch_count", value: "90", description: "이 투구수 이상이면 과부하(-2점)" },
         { key: "fatigue.heavy_innings", value: "7", description: "이 이닝 이상이면 과부하(-2점)" },

@@ -26,7 +26,7 @@ export default function AdminSettle() {
   const autoSyncStatus = trpc.admin.apiSyncStatus.useQuery(undefined, { refetchInterval: 30000 });
 
   const runSettlement = trpc.admin.settleMatch.useMutation({
-    onSuccess: () => { toast.success("정산 실행 완료 (예측 참여자 정산 + 분석가 승률 갱신)"); utils.match.list.invalidate(); },
+    onSuccess: () => { toast.success("정산 실행 완료 (분석가 승률/순위 갱신)"); utils.match.list.invalidate(); },
     onError: (e) => toast.error(e.message),
   });
   const manualScoreUpdate = trpc.match.update.useMutation({

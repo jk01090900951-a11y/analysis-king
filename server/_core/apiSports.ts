@@ -73,7 +73,7 @@ export async function searchLeaguesByCountry(sportName: string, country: string)
 }
 
 export interface ApiFootballFixture {
-  fixture: { id: number; date: string; venue: { name: string | null } | null; status: { short: string } };
+  fixture: { id: number; date: string; venue: { name: string | null } | null; status: { short: string; long: string; elapsed: number | null } };
   league: { id: number; name: string; country: string };
   teams: {
     home: { id: number; name: string; logo: string | null };
@@ -175,6 +175,132 @@ export interface OddsInfo {
   over: string | null;
   under: string | null;
 }
+// ─── 리그 순위표 ────────────────────────────────────────────────────────────
+export interface StandingRow {
+  rank: number; team: string; teamLogo: string | null;
+  points: number; played: number; win: number; draw: number; lose: number;
+  goalsFor: number; goalsAgainst: number; form: string | null;
+}
+export async function fetchStandings(leagueExternalId: string, season: number): Promise<StandingRow[]> {
+  const url = `${FOOTBALL_BASE}/standings?league=${leagueExternalId}&season=${season}`;
+  const data = await apiSportsGet<{ response: any[] }>(url);
+  const table = data.response?.[0]?.league?.standings?.[0] ?? [];
+  return table.map((r: any) => ({
+    rank: r.rank, team: r.team?.name ?? "", teamLogo: r.team?.logo ?? null,
+    points: r.points, played: r.all?.played ?? 0, win: r.all?.win ?? 0, draw: r.all?.draw ?? 0, lose: r.all?.lose ?? 0,
+    goalsFor: r.all?.goals?.for ?? 0, goalsAgainst: r.all?.goals?.against ?? 0, form: r.form ?? null,
+  }));
+}
+
+// ─── 완료 경기 상세통계 (슈팅/점유율/코너킥 등) ─────────────────────────────
+export interface FixtureStatEntry { team: string; shotsTotal: number | null; shotsOnGoal: number | null; possession: string | null; corners: number | null; fouls: number | null; yellowCards: number | null; redCards: number | null; }
+export async function fetchFixtureStatistics(fixtureId: string): Promise<FixtureStatEntry[]> {
+  const url = `${FOOTBALL_BASE}/fixtures/statistics?fixture=${fixtureId}`;
+  const data = await apiSportsGet<{ response: any[] }>(url);
+  const findStat = (stats: any[], type: string) => stats?.find((s: any) => s.type === type)?.value ?? null;
+  return (data.response ?? []).map((r: any) => ({
+    team: r.team?.name ?? "",
+    shotsTotal: findStat(r.statistics, "Total Shots"),
+    shotsOnGoal: findStat(r.statistics, "Shots on Goal"),
+    possession: findStat(r.statistics, "Ball Possession"),
+    corners: findStat(r.statistics, "Corner Kicks"),
+    fouls: findStat(r.statistics, "Fouls"),
+    yellowCards: findStat(r.statistics, "Yellow Cards"),
+    redCards: findStat(r.statistics, "Red Cards"),
+  }));
+}
+
+// ─── 경기 중 이벤트 (골/카드 타임라인) ───────────────────────────────────────
+export interface FixtureEvent { minute: number; type: string; detail: string; team: string; player: string | null; assist: string | null; }
+export async function fetchFixtureEvents(fixtureId: string): Promise<FixtureEvent[]> {
+  const url = `${FOOTBALL_BASE}/fixtures/events?fixture=${fixtureId}`;
+  const data = await apiSportsGet<{ response: any[] }>(url);
+  return (data.response ?? []).map((e: any) => ({
+    minute: e.time?.elapsed ?? 0, type: e.type ?? "", detail: e.detail ?? "",
+    team: e.team?.name ?? "", player: e.player?.name ?? null, assist: e.assist?.name ?? null,
+  }));
+}
+
+// ─── 팀 시즌 통계 (득점/실점 평균, 클린시트 등) ─────────────────────────────
+export interface TeamSeasonStats { goalsForAvg: string | null; goalsAgainstAvg: string | null; cleanSheets: number | null; failedToScore: number | null; wins: number | null; draws: number | null; loses: number | null; }
+export async function fetchTeamStatistics(teamId: number, leagueExternalId: string, season: number): Promise<TeamSeasonStats | null> {
+  const url = `${FOOTBALL_BASE}/teams/statistics?team=${teamId}&league=${leagueExternalId}&season=${season}`;
+  const data = await apiSportsGet<{ response: any }>(url);
+  const r = data.response;
+  if (!r) return null;
+  return {
+    goalsForAvg: r.goals?.for?.average?.total ?? null,
+    goalsAgainstAvg: r.goals?.against?.average?.total ?? null,
+    cleanSheets: (r.clean_sheet?.home ?? 0) + (r.clean_sheet?.away ?? 0),
+    failedToScore: (r.failed_to_score?.home ?? 0) + (r.failed_to_score?.away ?? 0),
+    wins: r.fixtures?.wins?.total ?? null, draws: r.fixtures?.draws?.total ?? null, loses: r.fixtures?.loses?.total ?? null,
+  };
+}
+
+// ─── 선수 개인 경기기록 (슈팅/패스/파울/평점 등) ────────────────────────────
+export interface PlayerMatchStat {
+  team: string; name: string; position: string | null; rating: string | null;
+  minutes: number | null; goals: number | null; assists: number | null;
+  shotsTotal: number | null; shotsOn: number | null; passesTotal: number | null; passAccuracy: string | null;
+  tackles: number | null; duelsWon: number | null; fouls: number | null; yellowCards: number | null; redCards: number | null;
+}
+export async function fetchFixturePlayerStats(fixtureId: string): Promise<PlayerMatchStat[]> {
+  const url = `${FOOTBALL_BASE}/fixtures/players?fixture=${fixtureId}`;
+  const data = await apiSportsGet<{ response: any[] }>(url);
+  const result: PlayerMatchStat[] = [];
+  for (const teamBlock of data.response ?? []) {
+    const teamName = teamBlock.team?.name ?? "";
+    for (const p of teamBlock.players ?? []) {
+      const s = p.statistics?.[0];
+      if (!s) continue;
+      result.push({
+        team: teamName, name: p.player?.name ?? "", position: s.games?.position ?? null, rating: s.games?.rating ?? null,
+        minutes: s.games?.minutes ?? null, goals: s.goals?.total ?? null, assists: s.goals?.assists ?? null,
+        shotsTotal: s.shots?.total ?? null, shotsOn: s.shots?.on ?? null,
+        passesTotal: s.passes?.total ?? null, passAccuracy: s.passes?.accuracy ?? null,
+        tackles: s.tackles?.total ?? null, duelsWon: s.duels?.won ?? null,
+        fouls: s.fouls?.committed ?? null, yellowCards: s.cards?.yellow ?? null, redCards: s.cards?.red ?? null,
+      });
+    }
+  }
+  return result;
+}
+
+// ─── 감독 정보 ───────────────────────────────────────────────────────────────
+export interface CoachInfo { id: number; name: string; age: number | null; nationality: string | null; photo: string | null; career: { team: string; start: string | null; end: string | null }[]; }
+export async function fetchTeamCoach(teamId: number): Promise<CoachInfo | null> {
+  const url = `${FOOTBALL_BASE}/coachs?team=${teamId}`;
+  const data = await apiSportsGet<{ response: any[] }>(url);
+  const c = data.response?.[0];
+  if (!c) return null;
+  return {
+    id: c.id, name: c.name ?? "", age: c.age ?? null, nationality: c.nationality ?? null, photo: c.photo ?? null,
+    career: (c.career ?? []).map((k: any) => ({ team: k.team?.name ?? "", start: k.start ?? null, end: k.end ?? null })),
+  };
+}
+
+// ─── 우승 기록 (감독 기준) ───────────────────────────────────────────────────
+export interface TrophyInfo { league: string; country: string; season: string; place: string; }
+export async function fetchCoachTrophies(coachId: number): Promise<TrophyInfo[]> {
+  const url = `${FOOTBALL_BASE}/trophies?coach=${coachId}`;
+  const data = await apiSportsGet<{ response: any[] }>(url);
+  return (data.response ?? []).map((t: any) => ({ league: t.league ?? "", country: t.country ?? "", season: t.season ?? "", place: t.place ?? "" }));
+}
+
+// ─── 이적 기록 ───────────────────────────────────────────────────────────────
+export interface TransferInfo { playerName: string; date: string | null; fromTeam: string; toTeam: string; type: string | null; }
+export async function fetchTeamTransfers(teamId: number, limit: number = 10): Promise<TransferInfo[]> {
+  const url = `${FOOTBALL_BASE}/transfers?team=${teamId}`;
+  const data = await apiSportsGet<{ response: any[] }>(url);
+  const result: TransferInfo[] = [];
+  for (const p of data.response ?? []) {
+    for (const t of p.transfers ?? []) {
+      result.push({ playerName: p.player?.name ?? "", date: t.date ?? null, fromTeam: t.teams?.out?.name ?? "", toTeam: t.teams?.in?.name ?? "", type: t.type ?? null });
+    }
+  }
+  return result.sort((a, b) => (b.date ?? "").localeCompare(a.date ?? "")).slice(0, limit);
+}
+
 export async function fetchOdds(fixtureId: string): Promise<OddsInfo | null> {
   const url = `${FOOTBALL_BASE}/odds?fixture=${fixtureId}`;
   const data = await apiSportsGet<{ response: any[] }>(url);
@@ -198,6 +324,21 @@ export async function fetchOdds(fixtureId: string): Promise<OddsInfo | null> {
 export interface RealHeadToHead {
   date: string; homeTeam: string; awayTeam: string; homeScore: number | null; awayScore: number | null;
   result: "home" | "draw" | "away" | null; league: string;
+}
+
+// 팀의 최근 경기 (우리 DB 누적과 무관하게 API에서 직접 — 이제 막 추적 시작한 리그도 바로 데이터가 나오게)
+export interface TeamRecentFixture {
+  externalId: string; date: string; homeTeam: string; awayTeam: string; homeScore: number | null; awayScore: number | null;
+  league: string; leagueExternalId: string; homeTeamLogo: string | null; awayTeamLogo: string | null; venue: string | null;
+}
+export async function fetchTeamRecentFixtures(teamId: number, last: number = 10): Promise<TeamRecentFixture[]> {
+  const url = `${FOOTBALL_BASE}/fixtures?team=${teamId}&last=${last}&status=FT`;
+  const data = await apiSportsGet<{ response: ApiFootballFixture[] }>(url);
+  return (data.response ?? []).map((f) => ({
+    externalId: String(f.fixture.id), date: f.fixture.date, homeTeam: f.teams.home.name, awayTeam: f.teams.away.name,
+    homeScore: f.goals.home, awayScore: f.goals.away, league: f.league.name, leagueExternalId: String(f.league.id),
+    homeTeamLogo: f.teams.home.logo ?? null, awayTeamLogo: f.teams.away.logo ?? null, venue: f.fixture.venue?.name ?? null,
+  }));
 }
 
 // 실제 두 팀 간 최근 맞대결 기록 (팀ID 필요 — match.apiData의 teams.home.id/teams.away.id에서 추출)

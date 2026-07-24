@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import bcrypt from "bcryptjs";
 import { InsertUser, users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory, pitcherStartHistory, playerAppearanceLog } from "../drizzle/schema";
 import { ENV } from './_core/env';
-import { fetchUpcomingFixtures, fetchFixtureById, fetchUpcomingBaseballGames, ApiFootballFixture } from './_core/apiSports';
+import { fetchUpcomingFixtures, fetchFixtureById, fetchUpcomingBaseballGames, fetchStandings, fetchFixtureStatistics, fetchFixtureEvents, fetchFixturePlayerStats, ApiFootballFixture } from './_core/apiSports';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -97,7 +97,7 @@ export async function getAllLeagues() {
 }
 
 // ─── Matches ──────────────────────────────────────────────────────────────────
-export async function getMatches(filters?: { leagueId?: number; sportId?: number; status?: string; limit?: number; offset?: number; todayOnly?: boolean; sortDesc?: boolean }) {
+export async function getMatches(filters?: { leagueId?: number; sportId?: number; status?: string; limit?: number; offset?: number; todayOnly?: boolean; sortDesc?: boolean; date?: string; excludeOldFinished?: boolean; statusPriority?: boolean }) {
   const db = await getDb();
   if (!db) return { rows: [], total: 0 };
   let query = db.select({
@@ -115,7 +115,11 @@ export async function getMatches(filters?: { leagueId?: number; sportId?: number
     totalGoals: matches.totalGoals,
     overUnderLine: matches.overUnderLine,
     apiData: matches.apiData,
+    odds: matches.odds,
     status: matches.status,
+    statusElapsed: matches.statusElapsed,
+    statusLong: matches.statusLong,
+    settleStatus: matches.settleStatus,
     createdAt: matches.createdAt,
     leagueName: leagues.name,
     leagueCountry: leagues.country,
@@ -138,17 +142,35 @@ export async function getMatches(filters?: { leagueId?: number; sportId?: number
     conditions.push(gte(matches.matchDate, start));
     conditions.push(lte(matches.matchDate, end));
   }
+  // 2026 신규: 달력에서 특정 날짜를 고른 경우 그 날짜(00:00~23:59)만 조회
+  if (filters?.date) {
+    const d = new Date(filters.date);
+    const start = new Date(d); start.setHours(0, 0, 0, 0);
+    const end = new Date(d); end.setHours(23, 59, 59, 999);
+    conditions.push(gte(matches.matchDate, start));
+    conditions.push(lte(matches.matchDate, end));
+  }
+  // 2026 신규: 사용자 화면 기본 목록에서 "어제 이전에 끝났거나 취소된 경기"는 제외 (달력으로 따로 볼 수 있음)
+  if (filters?.excludeOldFinished) {
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+    conditions.push(or(sql`${matches.status} NOT IN ('finished', 'cancelled')`, gte(matches.matchDate, todayStart)));
+  }
 
   const limit = filters?.limit ?? 50;
   const offset = filters?.offset ?? 0;
-  const orderCol = filters?.sortDesc ? desc(matches.matchDate) : matches.matchDate;
+  // 2026 신규: 사용자 화면 기본 정렬 = 진행중 → 예정 → 종료 순, 그 안에서는 날짜순
+  // (예전엔 두 정렬 기준을 배열로 나눠 넘겨서 두번째 기준(날짜순)이 무시되는 버그가 있었음
+  //  → 하나의 sql 구문으로 합쳐서 확실하게 "상태우선, 그 다음 날짜순"이 같이 적용되도록 수정)
+  const orderExpr = filters?.statusPriority
+    ? sql`CASE ${matches.status} WHEN 'live' THEN 0 WHEN 'scheduled' THEN 1 ELSE 2 END ASC, ${matches.matchDate} ASC`
+    : (filters?.sortDesc ? sql`${matches.matchDate} DESC` : sql`${matches.matchDate} ASC`);
 
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
   const [rows, countResult] = await Promise.all([
     whereClause
-      ? (query as any).where(whereClause).orderBy(orderCol).limit(limit).offset(offset)
-      : (query as any).orderBy(orderCol).limit(limit).offset(offset),
+      ? (query as any).where(whereClause).orderBy(orderExpr).limit(limit).offset(offset)
+      : (query as any).orderBy(orderExpr).limit(limit).offset(offset),
     db.select({ count: sql<number>`count(*)` }).from(matches)
       .leftJoin(leagues, eq(matches.leagueId, leagues.id))
       .where(whereClause),
@@ -166,7 +188,26 @@ export async function getMatches(filters?: { leagueId?: number; sportId?: number
   return { rows: rows.map((r: any) => ({ ...r, hasAnalysis: analyzedSet.has(r.id), hasPicks: pickedSet.has(r.id) })), total };
 }
 
-// 2026 신규: 오래된 테스트 데이터(예: 2024 시즌 파이프라인 검증용) 일괄 정리
+// 2026 신규: 페이지네이션과 무관하게 필터에 맞는 전체 matchId만 가볍게 조회 (여러 페이지 걸친 일괄선택용)
+export async function getMatchIdsByFilter(filters?: { leagueId?: number; sportId?: number; status?: string; todayOnly?: boolean }) {
+  const db = await getDb();
+  if (!db) return [];
+  let query = db.select({ id: matches.id }).from(matches).leftJoin(leagues, eq(matches.leagueId, leagues.id));
+  const conditions = [];
+  if (filters?.leagueId) conditions.push(eq(matches.leagueId, filters.leagueId));
+  if (filters?.status) conditions.push(eq(matches.status, filters.status as any));
+  if (filters?.sportId) conditions.push(eq(leagues.sportId, filters.sportId));
+  if (filters?.todayOnly) {
+    const start = new Date(); start.setHours(0, 0, 0, 0);
+    const end = new Date(); end.setHours(23, 59, 59, 999);
+    conditions.push(gte(matches.matchDate, start));
+    conditions.push(lte(matches.matchDate, end));
+  }
+  const rows = conditions.length > 0 ? await (query as any).where(and(...conditions)) : await query;
+  return rows.map((r: any) => r.id as number);
+}
+
+
 export async function deleteMatchesBefore(beforeDate: Date) {
   const db = await getDb();
   if (!db) return { deleted: 0 };
@@ -199,12 +240,26 @@ export async function getMatchById(id: number) {
     apiData: matches.apiData,
     externalId: matches.externalId,
     status: matches.status,
+    statusElapsed: matches.statusElapsed,
+    statusLong: matches.statusLong,
+    settleStatus: matches.settleStatus,
     homeFormation: matches.homeFormation,
     awayFormation: matches.awayFormation,
     homeLineup: matches.homeLineup,
     awayLineup: matches.awayLineup,
     injuries: matches.injuries,
     odds: matches.odds,
+    events: matches.events,
+    matchStats: matches.matchStats,
+    playerStats: matches.playerStats,
+    homeTeamSeasonStats: matches.homeTeamSeasonStats,
+    awayTeamSeasonStats: matches.awayTeamSeasonStats,
+    homeCoach: matches.homeCoach,
+    awayCoach: matches.awayCoach,
+    homeCoachTrophies: matches.homeCoachTrophies,
+    awayCoachTrophies: matches.awayCoachTrophies,
+    homeTeamTransfers: matches.homeTeamTransfers,
+    awayTeamTransfers: matches.awayTeamTransfers,
     leagueName: leagues.name,
     leagueCountry: leagues.country,
     sportId: leagues.sportId,
@@ -430,7 +485,9 @@ export async function refreshLiveMatchStatuses() {
   if (!db) return { checked: 0, updated: 0 };
 
   const now = new Date();
-  const windowStart = new Date(now.getTime() - 4 * 60 * 60 * 1000);
+  // 2026 수정: 예전엔 "경기시작 후 4시간까지만" 확인해서, 그 안에 못 잡으면 영원히 "예정"으로 박제되는 버그가 있었음
+  // → 과거 창을 30일로 넓혀서, 방치된 경기도 계속 재확인 대상에 포함시킴 (아직 scheduled/live인 것만 대상이라 낭비 적음)
+  const windowStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const windowEnd = new Date(now.getTime() + 30 * 60 * 1000);
 
   const candidates = await db.select().from(matches).where(and(
@@ -448,13 +505,32 @@ export async function refreshLiveMatchStatuses() {
       const newStatus = mapApiStatus(fresh.fixture.status.short);
       const homeScore = fresh.goals.home;
       const awayScore = fresh.goals.away;
-      if (newStatus !== m.status || homeScore !== m.homeScore || awayScore !== m.awayScore) {
+      const elapsed = fresh.fixture.status.elapsed;
+      const statusLong = fresh.fixture.status.long;
+      // 2026 수정: 상태(예정→진행중→종료)가 안 바뀌어도, 진행중이면 스코어/경기시간이 계속 바뀌므로 매번 갱신 대상에 포함
+      const scoreChanged = homeScore !== m.homeScore || awayScore !== m.awayScore;
+      const elapsedChanged = elapsed !== m.statusElapsed;
+      if (newStatus !== m.status || scoreChanged || elapsedChanged) {
         await db.update(matches).set({
-          status: newStatus, homeScore, awayScore,
+          status: newStatus, homeScore, awayScore, statusElapsed: elapsed, statusLong,
           result: homeScore != null && awayScore != null ? (homeScore > awayScore ? "home" : homeScore < awayScore ? "away" : "draw") : null,
           totalGoals: homeScore != null && awayScore != null ? homeScore + awayScore : null,
         }).where(eq(matches.id, m.id));
         updated++;
+
+        // 2026 신규: 방금 "종료"로 바뀐 경기는 이벤트 타임라인 + 상세통계 + 선수개인기록도 같이 가져와 저장
+        if (newStatus === "finished" && m.status !== "finished") {
+          try {
+            const [events, stats, playerStats] = await Promise.all([
+              fetchFixtureEvents(m.externalId),
+              fetchFixtureStatistics(m.externalId),
+              fetchFixturePlayerStats(m.externalId),
+            ]);
+            await db.update(matches).set({ events, matchStats: stats, playerStats }).where(eq(matches.id, m.id));
+          } catch (e) {
+            console.warn(`[경기 종료 후 이벤트/통계 조회 실패] matchId=${m.id}:`, e);
+          }
+        }
       }
     } catch (e) {
       console.warn(`[경기상태 갱신 실패] matchId=${m.id}:`, e);
@@ -463,6 +539,61 @@ export async function refreshLiveMatchStatuses() {
   return { checked: candidates.length, updated };
 }
 
+
+// 2026 신규: "부족하면 API에서 가져와 화면에만 잠깐 보여주고 버리기"가 아니라,
+// 가져온 과거경기를 우리 DB에 실제로 저장해서 다음부터는 우리 데이터에서 바로 나오도록 함
+// (리그가 아직 우리쪽에 등록 안 돼있으면(externalLeagueId 매칭 안됨) 저장은 건너뛰고 화면표시만 함)
+export async function saveFetchedHistoricalFixture(fixture: {
+  externalId: string; date: string; homeTeam: string; awayTeam: string; homeScore: number | null; awayScore: number | null;
+  leagueExternalId: string; homeTeamLogo: string | null; awayTeamLogo: string | null; venue: string | null;
+}) {
+  const db = await getDb();
+  if (!db) return { saved: false };
+
+  const existing = await db.select({ id: matches.id }).from(matches).where(eq(matches.externalId, fixture.externalId)).limit(1);
+  if (existing.length > 0) return { saved: false, reason: "이미 저장됨" };
+
+  const leagueRows = await db.select().from(leagues).where(eq(leagues.externalLeagueId, fixture.leagueExternalId)).limit(1);
+  const league = leagueRows[0];
+  if (!league) return { saved: false, reason: "미등록 리그(자동생성 안 함)" };
+
+  const homeScore = fixture.homeScore, awayScore = fixture.awayScore;
+  await db.insert(matches).values({
+    leagueId: league.id, homeTeam: fixture.homeTeam, awayTeam: fixture.awayTeam,
+    homeTeamLogo: fixture.homeTeamLogo, awayTeamLogo: fixture.awayTeamLogo,
+    matchDate: new Date(fixture.date), venue: fixture.venue,
+    homeScore, awayScore,
+    result: homeScore != null && awayScore != null ? (homeScore > awayScore ? "home" : homeScore < awayScore ? "away" : "draw") : null,
+    totalGoals: homeScore != null && awayScore != null ? homeScore + awayScore : null,
+    externalId: fixture.externalId, status: "finished",
+  });
+  return { saved: true };
+}
+
+
+export async function getStandings(leagueId: number, season: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const leagueRows = await db.select().from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+  const league = leagueRows[0];
+  if (!league) return null;
+  if (!league.externalLeagueId) return { standings: null, error: "이 리그에 API-Sports 리그ID가 없어 순위표를 가져올 수 없습니다." };
+
+  const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+  if (league.standingsCache && league.standingsUpdatedAt && league.standingsUpdatedAt > sixHoursAgo) {
+    return { standings: league.standingsCache, updatedAt: league.standingsUpdatedAt };
+  }
+
+  try {
+    const fresh = await fetchStandings(league.externalLeagueId, season);
+    await db.update(leagues).set({ standingsCache: fresh, standingsUpdatedAt: new Date() }).where(eq(leagues.id, leagueId));
+    return { standings: fresh, updatedAt: new Date() };
+  } catch (e) {
+    console.warn(`[순위표 조회 실패] leagueId=${leagueId}:`, e);
+    // 실패해도 예전 캐시라도 있으면 그거라도 반환
+    return { standings: league.standingsCache ?? null, updatedAt: league.standingsUpdatedAt, error: "최신 순위표를 가져오지 못해 이전 캐시를 표시합니다." };
+  }
+}
 
 export async function syncFootballFixturesForLeague(leagueId: number, season: number) {
   const db = await getDb();
@@ -738,6 +869,33 @@ export async function getTeamHomeAwayRecord(teamName: string, side: "home" | "aw
     if (won) wins++; else if (drew) draws++; else losses++;
   }
   return { games: rows.length, wins, draws, losses, winRate: rows.length ? Math.round((wins / rows.length) * 100) : 0 };
+}
+
+// 2026 신규: 팀의 최근 경기를 "리스트"로 반환 (아래 splitH2hByVenue와 달리 집계가 아닌 개별 경기 행)
+// side: "all"=전체, "home"=이 팀이 홈일 때만, "away"=이 팀이 원정일 때만
+export async function getTeamRecentGamesList(teamName: string, side: "all" | "home" | "away", asOfDate: Date, limit: number = 5) {
+  const db = await getDb();
+  if (!db) return [];
+  const venueCond = side === "home" ? eq(matches.homeTeam, teamName) : side === "away" ? eq(matches.awayTeam, teamName) : or(eq(matches.homeTeam, teamName), eq(matches.awayTeam, teamName));
+  const rows = await db.select({
+    id: matches.id, matchDate: matches.matchDate, homeTeam: matches.homeTeam, awayTeam: matches.awayTeam,
+    homeScore: matches.homeScore, awayScore: matches.awayScore, result: matches.result, leagueName: leagues.name,
+  })
+    .from(matches)
+    .leftJoin(leagues, eq(matches.leagueId, leagues.id))
+    .where(and(venueCond as any, eq(matches.status, "finished"), lte(matches.matchDate, asOfDate)))
+    .orderBy(desc(matches.matchDate))
+    .limit(limit);
+
+  return rows.map((r) => {
+    const isHome = r.homeTeam === teamName;
+    const opponent = isHome ? r.awayTeam : r.homeTeam;
+    const teamScore = isHome ? r.homeScore : r.awayScore;
+    const oppScore = isHome ? r.awayScore : r.homeScore;
+    const outcome: "win" | "draw" | "loss" | null =
+      r.result == null ? null : r.result === "draw" ? "draw" : (isHome && r.result === "home") || (!isHome && r.result === "away") ? "win" : "loss";
+    return { id: r.id, date: r.matchDate, isHome, opponent, teamScore, oppScore, outcome, leagueName: r.leagueName };
+  });
 }
 
 // 2026 신규: 두 팀 간 상대전적을 "홈에서 만났을 때"/"원정에서 만났을 때"로 분리 (headToHead.records JSON을 그대로 재사용)

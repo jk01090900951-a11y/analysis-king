@@ -7,6 +7,9 @@ import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import { useExitInterstitial } from "@/components/ExitInterstitialAd";
 import MatchStatsTabs from "@/components/MatchStatsTabs";
+import { formatLiveStatus } from "@/lib/matchStatus";
+import Navbar from "@/components/Navbar";
+import CategoryMenu from "@/components/CategoryMenu";
 import {
   Trophy, ChevronDown, ChevronUp, Star,
   Shield, Zap, BarChart2, ArrowLeft
@@ -160,15 +163,23 @@ export default function MatchDetail() {
   const { id } = useParams<{ id: string }>();
   const matchId = parseInt(id ?? "0");
   const [, navigate] = useLocation();
+  const utils = trpc.useUtils();
   const { triggerExit, AdOverlay } = useExitInterstitial();
 
-  const { data: match, isLoading: matchLoading } = trpc.match.getById.useQuery({ id: matchId }, { enabled: !!matchId });
+  const { data: match, isLoading: matchLoading } = trpc.match.getById.useQuery(
+    { id: matchId },
+    { enabled: !!matchId, refetchInterval: (query) => (query.state.data?.status === "live" ? 30000 : false) }
+  );
   const { data: analyses = [], isLoading: analysesLoading, refetch: refetchAnalyses } = trpc.analysis.list.useQuery({ matchId }, { enabled: !!matchId });
   const { data: h2h } = trpc.analysis.headToHead.useQuery({ matchId }, { enabled: !!matchId });
 
   const ensureGenerated = trpc.analysis.ensureGenerated.useMutation({
     onSuccess: (r) => { if (!r.alreadyCached) refetchAnalyses(); },
     onError: () => {}, // 사용자 화면에는 실패를 노출하지 않음(관리자 로그에서 확인)
+  });
+  const ensureDetails = trpc.analysis.ensureMatchDetails.useMutation({
+    onSuccess: () => { utils.analysis.matchStats.invalidate({ matchId }); },
+    onError: () => {},
   });
   const incrementView = trpc.analysis.incrementView.useMutation();
 
@@ -179,6 +190,12 @@ export default function MatchDetail() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matchId, analysesLoading, analyses.length]);
+
+  // 2026 신규: H2H/라인업/부상자/배당률은 분석글 생성과 무관하게 항상 확보 (경기를 열면 자동 호출)
+  useEffect(() => {
+    if (matchId) ensureDetails.mutate({ matchId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchId]);
 
   useEffect(() => {
     if (matchId) incrementView.mutate({ matchId });
@@ -207,8 +224,10 @@ export default function MatchDetail() {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* 헤더 */}
-      <div className="sticky top-0 z-20 bg-background/95 backdrop-blur border-b border-border/30">
+      <Navbar />
+      <CategoryMenu />
+      {/* 경기 정보 서브헤더 */}
+      <div className="bg-background/95 backdrop-blur border-b border-border/30">
         <div className="max-w-2xl lg:max-w-3xl mx-auto px-4 py-3 flex items-center gap-3">
           <Button variant="ghost" size="icon" onClick={() => triggerExit(() => navigate("/matches"))} className="shrink-0"><ArrowLeft className="w-5 h-5" /></Button>
           <div className="min-w-0">
@@ -224,7 +243,7 @@ export default function MatchDetail() {
           <div className="px-5 pt-4 flex items-center justify-between">
             <Badge variant="outline" className="text-xs border-primary/30 text-primary/80">{match.leagueName}</Badge>
             <Badge variant="outline" className={`text-xs ${match.status === "live" ? "border-red-500/50 text-red-400 animate-pulse" : match.status === "finished" ? "border-green-500/30 text-green-400" : "border-border/30 text-foreground/50"}`}>
-              {match.status === "live" ? "🔴 LIVE" : match.status === "finished" ? "✅ 종료" : "⏰ 예정"}
+              {match.status === "live" ? `🔴 ${formatLiveStatus(match.status, match.statusLong, match.statusElapsed) || "LIVE"}` : match.status === "finished" ? "✅ 종료" : "⏰ 예정"}
             </Badge>
           </div>
           <div className="px-5 py-5 grid grid-cols-3 items-center gap-3">
@@ -234,8 +253,12 @@ export default function MatchDetail() {
 
             </div>
             <div className="text-center">
-              {match.status === "finished" && match.homeScore !== null ? (
-                <div className="text-3xl font-black text-foreground">{match.homeScore} : {match.awayScore}</div>
+              {(match.status === "finished" || match.status === "live") && match.homeScore !== null ? (
+                <div className={`text-3xl font-black flex items-center justify-center gap-2 ${match.status === "live" ? "animate-pulse" : ""}`}>
+                  <span className={match.homeScore! > match.awayScore! ? "text-red-500" : "text-foreground"}>{match.homeScore}</span>
+                  <span className="text-foreground/40 text-2xl">:</span>
+                  <span className={match.awayScore! > match.homeScore! ? "text-red-500" : "text-foreground"}>{match.awayScore}</span>
+                </div>
               ) : (
                 <div className="text-2xl font-black text-foreground/30">VS</div>
               )}
