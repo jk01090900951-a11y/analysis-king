@@ -1,5 +1,6 @@
 import { Link } from "wouter";
 import { Clock } from "lucide-react";
+import { formatLiveStatus } from "@/lib/matchStatus";
 
 interface LiveMatch {
   id: number;
@@ -9,6 +10,8 @@ interface LiveMatch {
   awayScore: number | null;
   matchDate: string;
   status: string;
+  statusLong?: string | null;
+  statusElapsed?: number | null;
   leagueName: string | null;
   sportIcon: string | null;
 }
@@ -29,7 +32,7 @@ export default function LiveScoreCarousel({ matches, isLoading }: { matches: Liv
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-muted-foreground truncate">{m.sportIcon} {m.leagueName}</span>
               {m.status === "live" ? (
-                <span className="text-xs font-bold text-red-500 flex items-center gap-1 shrink-0"><span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />LIVE</span>
+                <span className="text-xs font-bold text-red-500 flex items-center gap-1 shrink-0"><span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />{formatLiveStatus(m.status, m.statusLong ?? null, m.statusElapsed ?? null) || "LIVE"}</span>
               ) : (
                 <span className="text-xs text-muted-foreground flex items-center gap-1 shrink-0">
                   <Clock className="w-3 h-3" />

@@ -24,7 +24,7 @@ export default function Home() {
     limit: 30,
     statusPriority: true,
     excludeOldFinished: true,
-  });
+  }, { refetchInterval: 30000 }); // 라이브 스코어 자동 갱신
   const liveMatches = liveData?.rows ?? [];
 
   const todayStr = new Date().toDateString();
@@ -120,6 +120,8 @@ export default function Home() {
               awayScore: match.awayScore,
               matchDate: match.matchDate,
               status: match.status,
+              statusLong: match.statusLong,
+              statusElapsed: match.statusElapsed,
               leagueName: match.leagueName,
               sportIcon: match.sportIcon,
             }))}

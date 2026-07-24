@@ -82,6 +82,8 @@ export const matches = mysqlTable("matches", {
   status: mysqlEnum("status", ["scheduled", "live", "finished", "cancelled"]).default("scheduled").notNull(),
   settleStatus: mysqlEnum("settleStatus", ["pending", "settled", "error"]).default("pending").notNull(),
   settledAt: timestamp("settledAt"),
+  statusElapsed: int("statusElapsed"), // 라이브 경기 진행 시간(분) — 축구는 45+3 식 추가시간도 그대로 숫자로 옴
+  statusLong: varchar("statusLong", { length: 50 }), // "Halftime", "Second Half" 등 API 원문 (화면에는 한글로 매핑해서 표시)
   viewCount: int("viewCount").default(0).notNull(), // 2026: 포인트와 무관한 단순 인기도 지표(조회수)만 유지
   // 2026 신규: 실제 API-Sports에서 가져온 경기 상세 정보 (AI가 지어내지 않고 실제 데이터를 저장)
   homeFormation: varchar("homeFormation", { length: 20 }),

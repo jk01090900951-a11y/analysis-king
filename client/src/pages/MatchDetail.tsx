@@ -7,6 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import { useExitInterstitial } from "@/components/ExitInterstitialAd";
 import MatchStatsTabs from "@/components/MatchStatsTabs";
+import { formatLiveStatus } from "@/lib/matchStatus";
 import Navbar from "@/components/Navbar";
 import CategoryMenu from "@/components/CategoryMenu";
 import {
@@ -165,7 +166,10 @@ export default function MatchDetail() {
   const utils = trpc.useUtils();
   const { triggerExit, AdOverlay } = useExitInterstitial();
 
-  const { data: match, isLoading: matchLoading } = trpc.match.getById.useQuery({ id: matchId }, { enabled: !!matchId });
+  const { data: match, isLoading: matchLoading } = trpc.match.getById.useQuery(
+    { id: matchId },
+    { enabled: !!matchId, refetchInterval: (query) => (query.state.data?.status === "live" ? 30000 : false) }
+  );
   const { data: analyses = [], isLoading: analysesLoading, refetch: refetchAnalyses } = trpc.analysis.list.useQuery({ matchId }, { enabled: !!matchId });
   const { data: h2h } = trpc.analysis.headToHead.useQuery({ matchId }, { enabled: !!matchId });
 
@@ -239,7 +243,7 @@ export default function MatchDetail() {
           <div className="px-5 pt-4 flex items-center justify-between">
             <Badge variant="outline" className="text-xs border-primary/30 text-primary/80">{match.leagueName}</Badge>
             <Badge variant="outline" className={`text-xs ${match.status === "live" ? "border-red-500/50 text-red-400 animate-pulse" : match.status === "finished" ? "border-green-500/30 text-green-400" : "border-border/30 text-foreground/50"}`}>
-              {match.status === "live" ? "🔴 LIVE" : match.status === "finished" ? "✅ 종료" : "⏰ 예정"}
+              {match.status === "live" ? `🔴 ${formatLiveStatus(match.status, match.statusLong, match.statusElapsed) || "LIVE"}` : match.status === "finished" ? "✅ 종료" : "⏰ 예정"}
             </Badge>
           </div>
           <div className="px-5 py-5 grid grid-cols-3 items-center gap-3">
@@ -249,8 +253,8 @@ export default function MatchDetail() {
 
             </div>
             <div className="text-center">
-              {match.status === "finished" && match.homeScore !== null ? (
-                <div className="text-3xl font-black text-foreground">{match.homeScore} : {match.awayScore}</div>
+              {(match.status === "finished" || match.status === "live") && match.homeScore !== null ? (
+                <div className={`text-3xl font-black ${match.status === "live" ? "text-red-400" : "text-foreground"}`}>{match.homeScore} : {match.awayScore}</div>
               ) : (
                 <div className="text-2xl font-black text-foreground/30">VS</div>
               )}

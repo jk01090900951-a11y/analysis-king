@@ -8,6 +8,7 @@ import { useFavoriteSports } from "@/_core/hooks/useFavoriteSports";
 import { Clock, Zap, Filter, Star, Calendar as CalendarIcon } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { formatLiveStatus } from "@/lib/matchStatus";
 
 const statusLabel: Record<string, string> = { scheduled: "예정", live: "진행중", finished: "종료", cancelled: "취소" };
 const statusClass: Record<string, string> = { scheduled: "status-scheduled", live: "status-live", finished: "status-finished", cancelled: "status-cancelled" };
@@ -47,7 +48,7 @@ export default function Matches() {
     excludeOldFinished: !selectedDate, // 날짜 지정 안 했을 때만 "어제 이전 종료 경기" 숨김
     statusPriority: !selectedDate, // 날짜 지정 시엔 그 날짜 안에서 시간순이 더 자연스러움
     sortDesc: false,
-  });
+  }, { refetchInterval: 30000 }); // 라이브 스코어가 목록에서도 자동 갱신되도록
   const allMatches = matchesData?.rows;
   const matches = favoritesOnly ? (allMatches ?? []).filter((m: any) => favorites.includes(m.sportId)) : allMatches;
 
@@ -170,7 +171,9 @@ export default function Matches() {
                 <div className="p-5 rounded-2xl bg-card border border-border card-hover cursor-pointer">
                   <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2"><span className="text-lg">{match.sportIcon}</span><span className="text-xs text-muted-foreground font-medium">{match.leagueName}</span></div>
-                    <span className={statusClass[match.status] ?? "status-scheduled"}>{statusLabel[match.status] ?? match.status}</span>
+                    <span className={statusClass[match.status] ?? "status-scheduled"}>
+                      {match.status === "live" ? (formatLiveStatus(match.status, match.statusLong, match.statusElapsed) || "진행중") : (statusLabel[match.status] ?? match.status)}
+                    </span>
                   </div>
                   <div className="flex items-center justify-between gap-3 mb-4">
                     <div className="flex-1 text-center">

@@ -1,8 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { and, eq, desc, gte, lte, sql, isNull, inArray } from "drizzle-orm";
-import { getDb, verifyLogin, getAllUsers, createAdmin, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getMatchIdsByFilter, getAllBots, getBotById, getBotPicksForMatch, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow, syncFootballFixturesForLeague, syncBaseballGamesForLeague, bulkImportLeagues, refreshLiveMatchStatuses, deleteMatchesBefore, getTeamHomeAwayRecord, splitH2hByVenue, getTeamRecentGamesList, getStandings } from "./db";
-import { testApiSportsConnection, fetchCountries, searchLeaguesByCountry, SUPPORTED_SPORTS, fetchHeadToHead, fetchInjuries, fetchLineups, fetchOdds, fetchTeamStatistics, fetchTeamCoach, fetchCoachTrophies, fetchTeamTransfers } from "./_core/apiSports";
+import { getDb, verifyLogin, getAllUsers, createAdmin, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getMatchIdsByFilter, getAllBots, getBotById, getBotPicksForMatch, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow, syncFootballFixturesForLeague, syncBaseballGamesForLeague, bulkImportLeagues, refreshLiveMatchStatuses, deleteMatchesBefore, getTeamHomeAwayRecord, splitH2hByVenue, getTeamRecentGamesList, getStandings, saveFetchedHistoricalFixture } from "./db";
+import { testApiSportsConnection, fetchCountries, searchLeaguesByCountry, SUPPORTED_SPORTS, fetchHeadToHead, fetchInjuries, fetchLineups, fetchOdds, fetchTeamStatistics, fetchTeamCoach, fetchCoachTrophies, fetchTeamTransfers, fetchTeamRecentFixtures } from "./_core/apiSports";
 import { users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory } from "../drizzle/schema";
 import { storagePut } from "./storage";
 import { COOKIE_NAME } from "@shared/const";
@@ -696,12 +696,41 @@ export const appRouter = router({
 
         // 2026 신규: 와이즈토토 스타일 — 전체/홈/원정 탭에 실제 최근 경기 리스트 (각 5경기)
         const asOf = new Date(match.matchDate);
-        const [homeTeamAllGames, awayTeamAllGames, homeTeamHomeGames, awayTeamAwayGames] = await Promise.all([
+        let [homeTeamAllGames, awayTeamAllGames, homeTeamHomeGames, awayTeamAwayGames] = await Promise.all([
           getTeamRecentGamesList(match.homeTeam, "all", asOf, 5),
           getTeamRecentGamesList(match.awayTeam, "all", asOf, 5),
           getTeamRecentGamesList(match.homeTeam, "home", asOf, 5),
           getTeamRecentGamesList(match.awayTeam, "away", asOf, 5),
         ]);
+
+        // 우리 DB 누적이 아직 적은 리그(막 추적 시작한 리그 등)는 API에서 직접 팀 최근경기를 가져와 보완
+        try {
+          const apiTeams = (match.apiData as any)?.teams;
+          const homeTeamId = apiTeams?.home?.id;
+          const awayTeamId = apiTeams?.away?.id;
+          const toGameRow = (f: { date: string; homeTeam: string; awayTeam: string; homeScore: number | null; awayScore: number | null; league: string }, teamName: string, idx: number) => {
+            const isHome = f.homeTeam === teamName;
+            const teamScore = isHome ? f.homeScore : f.awayScore;
+            const oppScore = isHome ? f.awayScore : f.homeScore;
+            const outcome: "win" | "draw" | "loss" | null = teamScore == null || oppScore == null ? null : teamScore === oppScore ? "draw" : teamScore > oppScore ? "win" : "loss";
+            return { id: -1000 - idx, date: new Date(f.date), isHome, opponent: isHome ? f.awayTeam : f.homeTeam, teamScore, oppScore, outcome, leagueName: f.league };
+          };
+          if (homeTeamAllGames.length < 3 && homeTeamId) {
+            const fresh = await fetchTeamRecentFixtures(homeTeamId, 5);
+            homeTeamAllGames = fresh.map((f, i) => toGameRow(f, match.homeTeam, i));
+            homeTeamHomeGames = fresh.filter((f) => f.homeTeam === match.homeTeam).map((f, i) => toGameRow(f, match.homeTeam, i));
+            // 화면에만 잠깐 보여주고 버리지 않고, 우리 DB에도 실제로 저장 (다음부터는 API 재호출 없이 우리 데이터에서 바로 나옴)
+            for (const f of fresh) { await saveFetchedHistoricalFixture(f); }
+          }
+          if (awayTeamAllGames.length < 3 && awayTeamId) {
+            const fresh = await fetchTeamRecentFixtures(awayTeamId, 5);
+            awayTeamAllGames = fresh.map((f, i) => toGameRow(f, match.awayTeam, i));
+            awayTeamAwayGames = fresh.filter((f) => f.awayTeam === match.awayTeam).map((f, i) => toGameRow(f, match.awayTeam, i));
+            for (const f of fresh) { await saveFetchedHistoricalFixture(f); }
+          }
+        } catch (e) {
+          console.warn(`[팀 최근경기 API 보완 실패] match=${input.matchId}:`, e);
+        }
 
         return {
           h2h, h2hSplit,

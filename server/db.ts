@@ -117,6 +117,8 @@ export async function getMatches(filters?: { leagueId?: number; sportId?: number
     apiData: matches.apiData,
     odds: matches.odds,
     status: matches.status,
+    statusElapsed: matches.statusElapsed,
+    statusLong: matches.statusLong,
     settleStatus: matches.settleStatus,
     createdAt: matches.createdAt,
     leagueName: leagues.name,
@@ -238,6 +240,8 @@ export async function getMatchById(id: number) {
     apiData: matches.apiData,
     externalId: matches.externalId,
     status: matches.status,
+    statusElapsed: matches.statusElapsed,
+    statusLong: matches.statusLong,
     settleStatus: matches.settleStatus,
     homeFormation: matches.homeFormation,
     awayFormation: matches.awayFormation,
@@ -501,9 +505,14 @@ export async function refreshLiveMatchStatuses() {
       const newStatus = mapApiStatus(fresh.fixture.status.short);
       const homeScore = fresh.goals.home;
       const awayScore = fresh.goals.away;
-      if (newStatus !== m.status || homeScore !== m.homeScore || awayScore !== m.awayScore) {
+      const elapsed = fresh.fixture.status.elapsed;
+      const statusLong = fresh.fixture.status.long;
+      // 2026 수정: 상태(예정→진행중→종료)가 안 바뀌어도, 진행중이면 스코어/경기시간이 계속 바뀌므로 매번 갱신 대상에 포함
+      const scoreChanged = homeScore !== m.homeScore || awayScore !== m.awayScore;
+      const elapsedChanged = elapsed !== m.statusElapsed;
+      if (newStatus !== m.status || scoreChanged || elapsedChanged) {
         await db.update(matches).set({
-          status: newStatus, homeScore, awayScore,
+          status: newStatus, homeScore, awayScore, statusElapsed: elapsed, statusLong,
           result: homeScore != null && awayScore != null ? (homeScore > awayScore ? "home" : homeScore < awayScore ? "away" : "draw") : null,
           totalGoals: homeScore != null && awayScore != null ? homeScore + awayScore : null,
         }).where(eq(matches.id, m.id));
@@ -531,7 +540,37 @@ export async function refreshLiveMatchStatuses() {
 }
 
 
-// 2026 신규: 리그 순위표 (자주 안 바뀌므로 6시간 캐시 — 매번 API 호출 안 함)
+// 2026 신규: "부족하면 API에서 가져와 화면에만 잠깐 보여주고 버리기"가 아니라,
+// 가져온 과거경기를 우리 DB에 실제로 저장해서 다음부터는 우리 데이터에서 바로 나오도록 함
+// (리그가 아직 우리쪽에 등록 안 돼있으면(externalLeagueId 매칭 안됨) 저장은 건너뛰고 화면표시만 함)
+export async function saveFetchedHistoricalFixture(fixture: {
+  externalId: string; date: string; homeTeam: string; awayTeam: string; homeScore: number | null; awayScore: number | null;
+  leagueExternalId: string; homeTeamLogo: string | null; awayTeamLogo: string | null; venue: string | null;
+}) {
+  const db = await getDb();
+  if (!db) return { saved: false };
+
+  const existing = await db.select({ id: matches.id }).from(matches).where(eq(matches.externalId, fixture.externalId)).limit(1);
+  if (existing.length > 0) return { saved: false, reason: "이미 저장됨" };
+
+  const leagueRows = await db.select().from(leagues).where(eq(leagues.externalLeagueId, fixture.leagueExternalId)).limit(1);
+  const league = leagueRows[0];
+  if (!league) return { saved: false, reason: "미등록 리그(자동생성 안 함)" };
+
+  const homeScore = fixture.homeScore, awayScore = fixture.awayScore;
+  await db.insert(matches).values({
+    leagueId: league.id, homeTeam: fixture.homeTeam, awayTeam: fixture.awayTeam,
+    homeTeamLogo: fixture.homeTeamLogo, awayTeamLogo: fixture.awayTeamLogo,
+    matchDate: new Date(fixture.date), venue: fixture.venue,
+    homeScore, awayScore,
+    result: homeScore != null && awayScore != null ? (homeScore > awayScore ? "home" : homeScore < awayScore ? "away" : "draw") : null,
+    totalGoals: homeScore != null && awayScore != null ? homeScore + awayScore : null,
+    externalId: fixture.externalId, status: "finished",
+  });
+  return { saved: true };
+}
+
+
 export async function getStandings(leagueId: number, season: number) {
   const db = await getDb();
   if (!db) return null;

@@ -33,3 +33,58 @@
     font-family: "Noto Sans KR", "Inter", sans-serif;
   }
 }
+
+/* 2026 신규: 그동안 JSX 곳곳에서 참조만 되고 실제 정의가 빠져있던 커스텀 유틸리티 클래스들
+   (특히 status-live는 실시간 경기를 눈에 띄게 보여야 한다는 요청 반영 — 빨간색+깜빡임) */
+@layer components {
+  .status-live {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold bg-red-500 text-white;
+    animation: pulse-live 1.5s ease-in-out infinite;
+  }
+  .status-live::before {
+    content: "";
+    @apply w-1.5 h-1.5 rounded-full bg-white;
+  }
+  .status-scheduled {
+    @apply inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-accent text-muted-foreground;
+  }
+  .status-finished {
+    @apply inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground/70;
+  }
+  .status-cancelled {
+    @apply inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-destructive/20 text-destructive;
+  }
+  .sport-chip {
+    @apply px-3 py-1.5 rounded-full text-sm font-medium bg-card border border-border text-muted-foreground transition-colors cursor-pointer hover:bg-accent;
+  }
+  .sport-chip.active {
+    @apply bg-primary text-primary-foreground border-primary;
+  }
+  .card-hover {
+    @apply transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:border-primary/40;
+  }
+  .gold-gradient {
+    background: linear-gradient(135deg, hsl(45 93% 58%), hsl(38 92% 50%));
+  }
+  .gold-text {
+    background: linear-gradient(135deg, hsl(45 93% 58%), hsl(38 92% 50%));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .glass {
+    @apply bg-background/80 backdrop-blur-md;
+  }
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}

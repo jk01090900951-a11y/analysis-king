@@ -73,7 +73,7 @@ export async function searchLeaguesByCountry(sportName: string, country: string)
 }
 
 export interface ApiFootballFixture {
-  fixture: { id: number; date: string; venue: { name: string | null } | null; status: { short: string } };
+  fixture: { id: number; date: string; venue: { name: string | null } | null; status: { short: string; long: string; elapsed: number | null } };
   league: { id: number; name: string; country: string };
   teams: {
     home: { id: number; name: string; logo: string | null };
@@ -324,6 +324,21 @@ export async function fetchOdds(fixtureId: string): Promise<OddsInfo | null> {
 export interface RealHeadToHead {
   date: string; homeTeam: string; awayTeam: string; homeScore: number | null; awayScore: number | null;
   result: "home" | "draw" | "away" | null; league: string;
+}
+
+// 팀의 최근 경기 (우리 DB 누적과 무관하게 API에서 직접 — 이제 막 추적 시작한 리그도 바로 데이터가 나오게)
+export interface TeamRecentFixture {
+  externalId: string; date: string; homeTeam: string; awayTeam: string; homeScore: number | null; awayScore: number | null;
+  league: string; leagueExternalId: string; homeTeamLogo: string | null; awayTeamLogo: string | null; venue: string | null;
+}
+export async function fetchTeamRecentFixtures(teamId: number, last: number = 10): Promise<TeamRecentFixture[]> {
+  const url = `${FOOTBALL_BASE}/fixtures?team=${teamId}&last=${last}&status=FT`;
+  const data = await apiSportsGet<{ response: ApiFootballFixture[] }>(url);
+  return (data.response ?? []).map((f) => ({
+    externalId: String(f.fixture.id), date: f.fixture.date, homeTeam: f.teams.home.name, awayTeam: f.teams.away.name,
+    homeScore: f.goals.home, awayScore: f.goals.away, league: f.league.name, leagueExternalId: String(f.league.id),
+    homeTeamLogo: f.teams.home.logo ?? null, awayTeamLogo: f.teams.away.logo ?? null, venue: f.fixture.venue?.name ?? null,
+  }));
 }
 
 // 실제 두 팀 간 최근 맞대결 기록 (팀ID 필요 — match.apiData의 teams.home.id/teams.away.id에서 추출)
