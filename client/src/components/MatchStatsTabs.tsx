@@ -38,9 +38,10 @@ function GameList({ teamName, games }: { teamName: string; games: GameRow[] }) {
           <div key={g.id} className="flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-accent/20 text-xs">
             <span className="text-muted-foreground shrink-0 w-16">{new Date(g.date).toLocaleDateString("ko-KR", { month: "2-digit", day: "2-digit" })}</span>
             <span className="text-muted-foreground shrink-0 w-10 truncate">{g.leagueName}</span>
-            <span className={`flex-1 truncate ${!g.isHome ? "" : "font-medium"}`}>{teamName}</span>
-            <span className="font-bold text-foreground shrink-0 w-10 text-center">{g.teamScore ?? "-"} : {g.oppScore ?? "-"}</span>
-            <span className="flex-1 truncate text-right">{g.opponent}</span>
+            <span className={`shrink-0 w-8 text-center text-[10px] rounded px-1 ${g.isHome ? "bg-blue-500/15 text-blue-400" : "bg-orange-500/15 text-orange-400"}`}>{g.isHome ? "홈" : "원정"}</span>
+            <span className={`flex-1 truncate ${g.isHome ? "font-medium" : ""}`}>{g.isHome ? teamName : g.opponent}</span>
+            <span className="font-bold text-foreground shrink-0 w-10 text-center">{g.isHome ? g.teamScore ?? "-" : g.oppScore ?? "-"} : {g.isHome ? g.oppScore ?? "-" : g.teamScore ?? "-"}</span>
+            <span className={`flex-1 truncate text-right ${!g.isHome ? "font-medium" : ""}`}>{g.isHome ? g.opponent : teamName}</span>
             {g.outcome && (
               <span className={`shrink-0 w-6 h-6 rounded flex items-center justify-center text-[10px] font-bold ${outcomeBadge[g.outcome].className}`}>
                 {outcomeBadge[g.outcome].label}
@@ -122,31 +123,38 @@ export default function MatchStatsTabs({ matchId, homeTeam, awayTeam }: Props) {
         {h2hFilter === "home" && <GameList teamName={homeTeam} games={recentGames.homeTeamHomeGames as GameRow[]} />}
         {h2hFilter === "away" && <GameList teamName={awayTeam} games={recentGames.awayTeamAwayGames as GameRow[]} />}
 
-        {/* 하단: 실제 두 팀 맞대결 표 — 탭 선택과 무관하게 항상 전체 그대로 고정 표시 */}
-        {h2hRecords.length > 0 && (
-          <div className="mt-4 pt-3 border-t border-border/30">
-            <div className="flex items-center justify-between mb-2 px-1">
-              <p className="text-xs font-bold text-primary">최근 상대전적</p>
-              <p className="text-xs text-muted-foreground">{homeTeam} {h2h!.homeWins}승 {h2h!.draws}무 {h2h!.awayWins}패 {awayTeam}</p>
-            </div>
-            <div className="space-y-1">
-              {h2hRecords.slice(0, visibleH2h).map((r, i) => (
-                <div key={i} className="flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-accent/20 text-xs">
-                  <span className="text-muted-foreground shrink-0 w-16">{new Date(r.date).toLocaleDateString("ko-KR", { year: "2-digit", month: "2-digit", day: "2-digit" })}</span>
-                  <span className="text-muted-foreground shrink-0 w-10 truncate">{r.league ?? ""}</span>
-                  <span className="flex-1 truncate text-right">{r.homeTeam}</span>
-                  <span className="font-bold text-foreground shrink-0 w-12 text-center">{r.homeScore} : {r.awayScore}</span>
-                  <span className="flex-1 truncate">{r.awayTeam}</span>
+        {/* 하단: 실제 두 팀 맞대결 표 — 탭 선택에 맞춰 홈/원정으로 필터링 */}
+        {h2hRecords.length > 0 && (() => {
+          const filteredH2h = h2hFilter === "all" ? h2hRecords : h2hFilter === "home" ? h2hRecords.filter((r) => r.homeTeam === homeTeam) : h2hRecords.filter((r) => r.awayTeam === awayTeam);
+          return (
+            <div className="mt-4 pt-3 border-t border-border/30">
+              <div className="flex items-center justify-between mb-2 px-1">
+                <p className="text-xs font-bold text-primary">최근 상대전적</p>
+                <p className="text-xs text-muted-foreground">{homeTeam} {h2h!.homeWins}승 {h2h!.draws}무 {h2h!.awayWins}패 {awayTeam}</p>
+              </div>
+              {filteredH2h.length === 0 ? (
+                <p className="text-xs text-muted-foreground text-center py-4">해당 조건의 맞대결 기록이 없습니다.</p>
+              ) : (
+                <div className="space-y-1">
+                  {filteredH2h.slice(0, visibleH2h).map((r, i) => (
+                    <div key={i} className="flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-accent/20 text-xs">
+                      <span className="text-muted-foreground shrink-0 w-16">{new Date(r.date).toLocaleDateString("ko-KR", { year: "2-digit", month: "2-digit", day: "2-digit" })}</span>
+                      <span className="text-muted-foreground shrink-0 w-10 truncate">{r.league ?? ""}</span>
+                      <span className="flex-1 truncate text-right">{r.homeTeam}</span>
+                      <span className="font-bold text-foreground shrink-0 w-12 text-center">{r.homeScore} : {r.awayScore}</span>
+                      <span className="flex-1 truncate">{r.awayTeam}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
+              {filteredH2h.length > visibleH2h && (
+                <button onClick={() => setVisibleH2h((v) => v + 10)} className="w-full text-center text-xs text-muted-foreground hover:text-primary py-2 flex items-center justify-center gap-1">
+                  더 많은 경기 보기 <span className="text-[10px]">▾</span>
+                </button>
+              )}
             </div>
-            {h2hRecords.length > visibleH2h && (
-              <button onClick={() => setVisibleH2h((v) => v + 10)} className="w-full text-center text-xs text-muted-foreground hover:text-primary py-2 flex items-center justify-center gap-1">
-                더 많은 경기 보기 <span className="text-[10px]">▾</span>
-              </button>
-            )}
-          </div>
-        )}
+          );
+        })()}
       </TabsContent>
 
       {/* 순위표 */}
