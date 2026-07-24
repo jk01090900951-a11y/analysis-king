@@ -182,9 +182,14 @@ export default function Matches() {
                       <p className="text-xs text-muted-foreground">홈</p>
                     </div>
                     <div className="text-center px-2">
-                      <div className="text-xl font-bold text-muted-foreground">VS</div>
-                      {match.status === "finished" && match.homeScore !== null && (
-                        <div className="text-sm font-bold text-primary mt-1">{match.homeScore} - {match.awayScore}</div>
+                      {(match.status === "finished" || match.status === "live") && match.homeScore !== null ? (
+                        <div className={`text-xl font-black flex items-center gap-1.5 ${match.status === "live" ? "animate-pulse" : ""}`}>
+                          <span className={match.homeScore > match.awayScore ? "text-red-500" : "text-foreground"}>{match.homeScore}</span>
+                          <span className="text-muted-foreground text-sm">:</span>
+                          <span className={match.awayScore > match.homeScore ? "text-red-500" : "text-foreground"}>{match.awayScore}</span>
+                        </div>
+                      ) : (
+                        <div className="text-xl font-bold text-muted-foreground">VS</div>
                       )}
                     </div>
                     <div className="flex-1 text-center">

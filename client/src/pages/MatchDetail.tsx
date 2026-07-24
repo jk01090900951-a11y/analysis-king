@@ -254,7 +254,11 @@ export default function MatchDetail() {
             </div>
             <div className="text-center">
               {(match.status === "finished" || match.status === "live") && match.homeScore !== null ? (
-                <div className={`text-3xl font-black ${match.status === "live" ? "text-red-400" : "text-foreground"}`}>{match.homeScore} : {match.awayScore}</div>
+                <div className={`text-3xl font-black flex items-center justify-center gap-2 ${match.status === "live" ? "animate-pulse" : ""}`}>
+                  <span className={match.homeScore! > match.awayScore! ? "text-red-500" : "text-foreground"}>{match.homeScore}</span>
+                  <span className="text-foreground/40 text-2xl">:</span>
+                  <span className={match.awayScore! > match.homeScore! ? "text-red-500" : "text-foreground"}>{match.awayScore}</span>
+                </div>
               ) : (
                 <div className="text-2xl font-black text-foreground/30">VS</div>
               )}

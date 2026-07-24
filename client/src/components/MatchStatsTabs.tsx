@@ -64,7 +64,8 @@ export default function MatchStatsTabs({ matchId, homeTeam, awayTeam }: Props) {
   if (isLoading) return <div className="h-40 rounded-xl bg-accent/20 animate-pulse" />;
   if (!data) return null;
 
-  const { recentGames, lineup, injuries, odds: rawOdds, venue: rawVenue, events, fixtureStats, playerStats, homeTeamSeasonStats, awayTeamSeasonStats, homeCoach, awayCoach, homeCoachTrophies, awayCoachTrophies, homeTeamTransfers, awayTeamTransfers } = data;
+  const { h2h, recentGames, lineup, injuries, odds: rawOdds, venue: rawVenue, events, fixtureStats, playerStats, homeTeamSeasonStats, awayTeamSeasonStats, homeCoach, awayCoach, homeCoachTrophies, awayCoachTrophies, homeTeamTransfers, awayTeamTransfers } = data;
+  const h2hRecords = (h2h?.records as { date: string; homeTeam: string; awayTeam: string; homeScore: number; awayScore: number; result: string; league?: string }[] | null) ?? [];
   const venue = rawVenue as string | null;
   const odds = rawOdds as { bookmaker: string; homeWin: string | null; draw: string | null; awayWin: string | null } | null;
   const injuriesList = (injuries as { team: string; player: string; type: string; reason: string }[] | null) ?? [];
@@ -95,6 +96,26 @@ export default function MatchStatsTabs({ matchId, homeTeam, awayTeam }: Props) {
 
       {/* H2H: 전체 / 홈 / 원정 서브탭 + 실제 최근경기 리스트 (와이즈토토 스타일) */}
       <TabsContent value="h2h">
+        {/* 2026 신규: 실제 두 팀간 맞대결 기록 (진짜 상대전적 — 그동안 데이터는 모으고 화면엔 안 보여주던 부분) */}
+        {h2h && h2hRecords.length > 0 && (
+          <div className="mb-4 p-3 rounded-xl bg-primary/5 border border-primary/20">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-bold text-primary">맞대결 기록 (최근 {h2h.totalGames}경기)</p>
+              <p className="text-xs text-muted-foreground">{homeTeam} {h2h.homeWins}승 {h2h.draws}무 {h2h.awayWins}패 {awayTeam}</p>
+            </div>
+            <div className="space-y-1">
+              {h2hRecords.slice(0, 5).map((r, i) => (
+                <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-accent/20 text-xs">
+                  <span className="text-muted-foreground shrink-0 w-16">{new Date(r.date).toLocaleDateString("ko-KR", { year: "2-digit", month: "2-digit", day: "2-digit" })}</span>
+                  <span className="flex-1 truncate text-right">{r.homeTeam}</span>
+                  <span className="font-bold text-foreground shrink-0 w-12 text-center">{r.homeScore} : {r.awayScore}</span>
+                  <span className="flex-1 truncate">{r.awayTeam}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="flex gap-1.5 mb-3">
           <button onClick={() => setH2hFilter("all")} className={`px-3 py-1.5 rounded-full text-xs font-bold ${h2hFilter === "all" ? "bg-primary text-primary-foreground" : "bg-accent/30 text-muted-foreground"}`}>전체</button>
           <button onClick={() => setH2hFilter("home")} className={`px-3 py-1.5 rounded-full text-xs font-medium ${h2hFilter === "home" ? "bg-primary text-primary-foreground" : "bg-accent/30 text-muted-foreground"}`}>{homeTeam} · 홈</button>

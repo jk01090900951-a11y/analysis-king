@@ -40,7 +40,7 @@ function parseLineupAppearances(apiData: Record<string, unknown>): {
 // 분석글 생성 핵심 로직 — analysis.generate(관리자수동)/ensureGenerated(사용자자동)/prescheduleForMajorLeagues 공용
 // 2026 신규: 실제 API 상세데이터(H2H/부상자/라인업/배당률/홈원정스플릿) 수집 — 분석글 생성과 완전히 독립적으로 호출 가능
 // (예전엔 generateAnalysisForMatch 안에서만 실행돼서, 분석글 생성을 안 하면 이 데이터들도 영영 안 채워지는 문제가 있었음)
-async function ensureMatchDetailData(matchId: number) {
+export async function ensureMatchDetailData(matchId: number) {
   const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
   const match = await getMatchById(matchId);
   if (!match) throw new TRPCError({ code: "NOT_FOUND" });

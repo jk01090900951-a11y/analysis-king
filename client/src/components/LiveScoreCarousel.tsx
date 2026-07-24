@@ -42,7 +42,11 @@ export default function LiveScoreCarousel({ matches, isLoading }: { matches: Liv
             </div>
             <div className="flex items-center justify-between text-sm font-medium">
               <span className="truncate flex-1">{m.homeTeam}</span>
-              <span className="mx-2 font-bold text-primary shrink-0">{m.homeScore ?? "-"} : {m.awayScore ?? "-"}</span>
+              <span className="mx-2 font-bold shrink-0 flex items-center gap-1">
+                <span className={m.homeScore != null && m.awayScore != null && m.homeScore > m.awayScore ? "text-red-500" : "text-primary"}>{m.homeScore ?? "-"}</span>
+                <span className="text-muted-foreground text-xs">:</span>
+                <span className={m.homeScore != null && m.awayScore != null && m.awayScore > m.homeScore ? "text-red-500" : "text-primary"}>{m.awayScore ?? "-"}</span>
+              </span>
               <span className="truncate flex-1 text-right">{m.awayTeam}</span>
             </div>
           </a>
