@@ -27,12 +27,14 @@ const outcomeBadge: Record<string, { label: string; className: string }> = {
 };
 
 function GameList({ teamName, games }: { teamName: string; games: GameRow[] }) {
+  const [visible, setVisible] = useState(5);
   if (games.length === 0) return <p className="text-xs text-muted-foreground text-center py-4">최근 경기 기록이 없습니다.</p>;
+  const shown = games.slice(0, visible);
   return (
     <div>
       <p className="text-xs font-medium text-muted-foreground mb-2 px-1">마지막 경기: {teamName}</p>
       <div className="space-y-1">
-        {games.map((g) => (
+        {shown.map((g) => (
           <div key={g.id} className="flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-accent/20 text-xs">
             <span className="text-muted-foreground shrink-0 w-16">{new Date(g.date).toLocaleDateString("ko-KR", { month: "2-digit", day: "2-digit" })}</span>
             <span className="text-muted-foreground shrink-0 w-10 truncate">{g.leagueName}</span>
@@ -47,6 +49,11 @@ function GameList({ teamName, games }: { teamName: string; games: GameRow[] }) {
           </div>
         ))}
       </div>
+      {games.length > visible && (
+        <button onClick={() => setVisible((v) => v + 10)} className="w-full text-center text-xs text-muted-foreground hover:text-primary py-2 flex items-center justify-center gap-1">
+          더 많은 경기 보기 <span className="text-[10px]">▾</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -54,6 +61,7 @@ function GameList({ teamName, games }: { teamName: string; games: GameRow[] }) {
 export default function MatchStatsTabs({ matchId, homeTeam, awayTeam }: Props) {
   const { data, isLoading } = trpc.analysis.matchStats.useQuery({ matchId });
   const [h2hFilter, setH2hFilter] = useState<"all" | "home" | "away">("all");
+  const [visibleH2h, setVisibleH2h] = useState(5);
   // 2026 수정: 이 훅이 원래 아래 조기 return(로딩중/데이터없음) 이후에 있어서
   // 렌더링마다 훅 호출 개수가 달라져 "React error #310"이 나던 버그 — 최상단으로 이동
   const { data: standingsData } = trpc.sport.standings.useQuery(
@@ -122,7 +130,7 @@ export default function MatchStatsTabs({ matchId, homeTeam, awayTeam }: Props) {
               <p className="text-xs text-muted-foreground">{homeTeam} {h2h!.homeWins}승 {h2h!.draws}무 {h2h!.awayWins}패 {awayTeam}</p>
             </div>
             <div className="space-y-1">
-              {h2hRecords.map((r, i) => (
+              {h2hRecords.slice(0, visibleH2h).map((r, i) => (
                 <div key={i} className="flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-accent/20 text-xs">
                   <span className="text-muted-foreground shrink-0 w-16">{new Date(r.date).toLocaleDateString("ko-KR", { year: "2-digit", month: "2-digit", day: "2-digit" })}</span>
                   <span className="text-muted-foreground shrink-0 w-10 truncate">{r.league ?? ""}</span>
@@ -132,6 +140,11 @@ export default function MatchStatsTabs({ matchId, homeTeam, awayTeam }: Props) {
                 </div>
               ))}
             </div>
+            {h2hRecords.length > visibleH2h && (
+              <button onClick={() => setVisibleH2h((v) => v + 10)} className="w-full text-center text-xs text-muted-foreground hover:text-primary py-2 flex items-center justify-center gap-1">
+                더 많은 경기 보기 <span className="text-[10px]">▾</span>
+              </button>
+            )}
           </div>
         )}
       </TabsContent>
