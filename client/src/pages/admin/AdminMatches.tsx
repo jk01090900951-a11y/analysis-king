@@ -48,6 +48,25 @@ export default function AdminMatches() {
     if (allSelected) setSelected(new Set());
     else setSelected(new Set(visibleMatches.map((m: any) => m.id)));
   };
+
+  // 페이지네이션과 무관하게, 지금 필터에 걸리는 전체를 한 번에 선택 (300건이든 몇 건이든 한 번에)
+  const [selectingAll, setSelectingAll] = useState(false);
+  const selectAllAcrossPages = async () => {
+    setSelectingAll(true);
+    try {
+      const ids = await utils.client.match.allIds.query({
+        status: statusFilter === "all" ? undefined : statusFilter,
+        sportId: sportId ?? undefined,
+        todayOnly,
+      });
+      setSelected(new Set(ids));
+      toast.success(`전체 ${ids.length}건 선택 완료`);
+    } catch (e: any) {
+      toast.error(e?.message ?? "전체 선택 실패");
+    } finally {
+      setSelectingAll(false);
+    }
+  };
   const toggleOne = (id: number, checked: boolean) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -132,8 +151,13 @@ export default function AdminMatches() {
         <div className="flex items-center gap-3">
           <Checkbox checked={allSelected} onCheckedChange={toggleAll} />
           <span className="text-sm text-muted-foreground">
-            {selected.size > 0 ? `${selected.size}개 선택됨` : "전체 선택"} (이 페이지 {visibleMatches.length}건 / 전체 {total}건)
+            {selected.size > 0 ? `${selected.size}개 선택됨` : "이 페이지 선택"} (이 페이지 {visibleMatches.length}건 / 전체 {total}건)
           </span>
+          {total > visibleMatches.length && (
+            <Button size="sm" variant="ghost" className="text-xs h-7 text-primary" onClick={selectAllAcrossPages} disabled={selectingAll}>
+              {selectingAll ? "불러오는 중..." : `전체 ${total}건 모두 선택 (페이지 무관)`}
+            </Button>
+          )}
         </div>
         <div className="flex gap-2">
           <Button size="sm" variant="outline" onClick={bulkGenPicks} disabled={selected.size === 0 || !!progress}>

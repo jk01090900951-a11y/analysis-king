@@ -54,6 +54,8 @@ export const leagues = mysqlTable("leagues", {
   country: varchar("country", { length: 50 }),
   logoUrl: varchar("logoUrl", { length: 500 }),
   externalLeagueId: varchar("externalLeagueId", { length: 50 }), // API-Sports.io의 리그 ID (예: EPL=39). 이게 있어야 자동 동기화 가능
+  standingsCache: json("standingsCache"), // 순위표 캐시 (자주 안 바뀌어서 매번 API 호출 안 하고 캐시)
+  standingsUpdatedAt: timestamp("standingsUpdatedAt"),
   tier: mysqlEnum("tier", ["major", "minor"]).default("minor").notNull(), // major=빅리그(픽10개, 킥오프전 선제생성) / minor=비인기(픽4개, 클릭시 생성)
   sortOrder: int("sortOrder").default(0).notNull(),
   isActive: boolean("isActive").default(true).notNull(),
@@ -88,6 +90,17 @@ export const matches = mysqlTable("matches", {
   awayLineup: json("awayLineup"),
   injuries: json("injuries"), // [{team, player, type, reason}]
   odds: json("odds"), // {bookmaker, homeWin, draw, awayWin, over, under} — 참고정보용
+  events: json("events"), // 경기 중 이벤트(골/카드 타임라인) - 완료된 경기만
+  matchStats: json("matchStats"), // 완료 경기 상세통계(슈팅/점유율/코너킥 등)
+  playerStats: json("playerStats"), // 선수 개인기록(슈팅/패스/파울/평점 등) - 완료된 경기만
+  homeTeamSeasonStats: json("homeTeamSeasonStats"), // 홈팀 시즌 통계(득점/실점 평균, 클린시트 등)
+  awayTeamSeasonStats: json("awayTeamSeasonStats"), // 원정팀 시즌 통계
+  homeCoach: json("homeCoach"), // 홈팀 감독 정보
+  awayCoach: json("awayCoach"), // 원정팀 감독 정보
+  homeCoachTrophies: json("homeCoachTrophies"), // 홈팀 감독 우승 기록
+  awayCoachTrophies: json("awayCoachTrophies"), // 원정팀 감독 우승 기록
+  homeTeamTransfers: json("homeTeamTransfers"), // 홈팀 최근 이적 기록
+  awayTeamTransfers: json("awayTeamTransfers"), // 원정팀 최근 이적 기록
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

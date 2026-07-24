@@ -7,6 +7,8 @@ import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
 import { useExitInterstitial } from "@/components/ExitInterstitialAd";
 import MatchStatsTabs from "@/components/MatchStatsTabs";
+import Navbar from "@/components/Navbar";
+import CategoryMenu from "@/components/CategoryMenu";
 import {
   Trophy, ChevronDown, ChevronUp, Star,
   Shield, Zap, BarChart2, ArrowLeft
@@ -160,6 +162,7 @@ export default function MatchDetail() {
   const { id } = useParams<{ id: string }>();
   const matchId = parseInt(id ?? "0");
   const [, navigate] = useLocation();
+  const utils = trpc.useUtils();
   const { triggerExit, AdOverlay } = useExitInterstitial();
 
   const { data: match, isLoading: matchLoading } = trpc.match.getById.useQuery({ id: matchId }, { enabled: !!matchId });
@@ -170,6 +173,10 @@ export default function MatchDetail() {
     onSuccess: (r) => { if (!r.alreadyCached) refetchAnalyses(); },
     onError: () => {}, // 사용자 화면에는 실패를 노출하지 않음(관리자 로그에서 확인)
   });
+  const ensureDetails = trpc.analysis.ensureMatchDetails.useMutation({
+    onSuccess: () => { utils.analysis.matchStats.invalidate({ matchId }); },
+    onError: () => {},
+  });
   const incrementView = trpc.analysis.incrementView.useMutation();
 
   // 분석글이 없는 경기를 열람하면 자동으로 분석가의 글을 불러옵니다 (관리자 수동 생성 버튼 없음)
@@ -179,6 +186,12 @@ export default function MatchDetail() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matchId, analysesLoading, analyses.length]);
+
+  // 2026 신규: H2H/라인업/부상자/배당률은 분석글 생성과 무관하게 항상 확보 (경기를 열면 자동 호출)
+  useEffect(() => {
+    if (matchId) ensureDetails.mutate({ matchId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchId]);
 
   useEffect(() => {
     if (matchId) incrementView.mutate({ matchId });
@@ -207,8 +220,10 @@ export default function MatchDetail() {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* 헤더 */}
-      <div className="sticky top-0 z-20 bg-background/95 backdrop-blur border-b border-border/30">
+      <Navbar />
+      <CategoryMenu />
+      {/* 경기 정보 서브헤더 */}
+      <div className="bg-background/95 backdrop-blur border-b border-border/30">
         <div className="max-w-2xl lg:max-w-3xl mx-auto px-4 py-3 flex items-center gap-3">
           <Button variant="ghost" size="icon" onClick={() => triggerExit(() => navigate("/matches"))} className="shrink-0"><ArrowLeft className="w-5 h-5" /></Button>
           <div className="min-w-0">

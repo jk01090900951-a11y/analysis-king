@@ -1,5 +1,6 @@
 import { trpc } from "@/lib/trpc";
 import Navbar from "@/components/Navbar";
+import CategoryMenu from "@/components/CategoryMenu";
 import { Trophy, TrendingUp, Target, Zap, Flame } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -24,6 +25,7 @@ export default function Bots() {
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
+      <CategoryMenu />
       <div className="container py-10 max-w-5xl">
         <div className="mb-8">
           <h1 className="text-3xl font-black mb-2">전문 분석가 적중률 랭킹</h1>
