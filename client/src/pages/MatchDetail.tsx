@@ -171,7 +171,6 @@ export default function MatchDetail() {
     { enabled: !!matchId, refetchInterval: (query) => (query.state.data?.status === "live" ? 30000 : false) }
   );
   const { data: analyses = [], isLoading: analysesLoading, refetch: refetchAnalyses } = trpc.analysis.list.useQuery({ matchId }, { enabled: !!matchId });
-  const { data: h2h } = trpc.analysis.headToHead.useQuery({ matchId }, { enabled: !!matchId });
 
   const ensureGenerated = trpc.analysis.ensureGenerated.useMutation({
     onSuccess: (r) => { if (!r.alreadyCached) refetchAnalyses(); },
@@ -272,23 +271,6 @@ export default function MatchDetail() {
 
             </div>
           </div>
-          {h2h && (
-            <div className="mx-5 mb-4 p-3 rounded-xl bg-white/3 border border-border/20">
-              <p className="text-[11px] font-bold text-foreground/40 uppercase tracking-wider mb-2">최근 상대전적 ({h2h.totalGames}경기)</p>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-blue-400 font-bold">{match.homeTeam} {h2h.homeWins}승</span>
-                <div className="flex-1 flex h-2 rounded-full overflow-hidden gap-0.5">
-                  <div className="bg-blue-500 rounded-l-full" style={{ width: `${(h2h.homeWins / h2h.totalGames) * 100}%` }} />
-                  <div className="bg-yellow-500" style={{ width: `${(h2h.draws / h2h.totalGames) * 100}%` }} />
-                  <div className="bg-red-500 rounded-r-full" style={{ width: `${(h2h.awayWins / h2h.totalGames) * 100}%` }} />
-                </div>
-                <span className="text-xs text-red-400 font-bold">{h2h.awayWins}승 {match.awayTeam}</span>
-              </div>
-              <div className="flex justify-center mt-1">
-                <span className="text-[10px] text-foreground/30">무 {h2h.draws}회 · 평균 {h2h.avgTotalGoals}골</span>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* 경기 상세 정보 탭 (상대전적/팀기록/라인업/부상자/배당률) */}
@@ -313,26 +295,6 @@ export default function MatchDetail() {
             </div>
           )}
         </div>
-
-        {/* 상대전적 상세 */}
-        {h2h && Array.isArray(h2h.records) && h2h.records.length > 0 && (
-          <div className="rounded-2xl border border-border/40 p-5 space-y-3" style={{ background: "rgba(20,20,30,0.8)" }}>
-            <div className="flex items-center gap-2"><Shield className="w-4 h-4 text-primary" /><h2 className="font-bold text-sm">최근 상대전적</h2></div>
-            <div className="space-y-2">
-              {(h2h.records as Array<{ date: string; homeTeam: string; awayTeam: string; homeScore: number; awayScore: number; result: string }>).map((r, i) => (
-                <div key={i} className="flex items-center gap-3 py-2 border-b border-border/20 last:border-0">
-                  <span className="text-[11px] text-foreground/40 w-20 shrink-0">{r.date}</span>
-                  <span className="text-xs text-right flex-1 truncate">{r.homeTeam}</span>
-                  <span className="text-sm font-bold text-foreground shrink-0 w-12 text-center">{r.homeScore} - {r.awayScore}</span>
-                  <span className="text-xs flex-1 truncate">{r.awayTeam}</span>
-                  <Badge variant="outline" className={`text-[10px] shrink-0 ${r.result === "home" ? "text-blue-400 border-blue-500/30" : r.result === "draw" ? "text-yellow-400 border-yellow-500/30" : "text-red-400 border-red-500/30"}`}>
-                    {r.result === "home" ? "홈 승" : r.result === "draw" ? "무" : "원정 승"}
-                  </Badge>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
       {AdOverlay}
     </div>
