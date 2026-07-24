@@ -94,44 +94,57 @@ export default function MatchStatsTabs({ matchId, homeTeam, awayTeam }: Props) {
         <TabsTrigger value="info" className="text-xs">경기정보</TabsTrigger>
       </TabsList>
 
-      {/* H2H: 전체 / 홈 / 원정 서브탭 + 실제 최근경기 리스트 (와이즈토토 스타일) */}
+      {/* H2H: 전체 / 홈 / 원정 서브탭 — 실제 두 팀 맞대결 기록을 장소별로 필터링 (없으면 각 팀 개별 최근폼으로 대체) */}
       <TabsContent value="h2h">
-        {/* 2026 신규: 실제 두 팀간 맞대결 기록 (진짜 상대전적 — 그동안 데이터는 모으고 화면엔 안 보여주던 부분) */}
-        {h2h && h2hRecords.length > 0 && (
-          <div className="mb-4 p-3 rounded-xl bg-primary/5 border border-primary/20">
-            <div className="flex items-center justify-between mb-2">
-              <p className="text-xs font-bold text-primary">맞대결 기록 (최근 {h2h.totalGames}경기)</p>
-              <p className="text-xs text-muted-foreground">{homeTeam} {h2h.homeWins}승 {h2h.draws}무 {h2h.awayWins}패 {awayTeam}</p>
+        {h2hRecords.length > 0 ? (
+          <>
+            <div className="flex items-center justify-between mb-3 px-1">
+              <p className="text-xs font-bold text-primary">맞대결 기록 (최근 {h2h!.totalGames}경기)</p>
+              <p className="text-xs text-muted-foreground">{homeTeam} {h2h!.homeWins}승 {h2h!.draws}무 {h2h!.awayWins}패 {awayTeam}</p>
             </div>
-            <div className="space-y-1">
-              {h2hRecords.slice(0, 5).map((r, i) => (
-                <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-accent/20 text-xs">
-                  <span className="text-muted-foreground shrink-0 w-16">{new Date(r.date).toLocaleDateString("ko-KR", { year: "2-digit", month: "2-digit", day: "2-digit" })}</span>
-                  <span className="flex-1 truncate text-right">{r.homeTeam}</span>
-                  <span className="font-bold text-foreground shrink-0 w-12 text-center">{r.homeScore} : {r.awayScore}</span>
-                  <span className="flex-1 truncate">{r.awayTeam}</span>
+            <div className="flex gap-1.5 mb-3">
+              <button onClick={() => setH2hFilter("all")} className={`px-3 py-1.5 rounded-full text-xs font-bold ${h2hFilter === "all" ? "bg-primary text-primary-foreground" : "bg-accent/30 text-muted-foreground"}`}>전체</button>
+              <button onClick={() => setH2hFilter("home")} className={`px-3 py-1.5 rounded-full text-xs font-medium ${h2hFilter === "home" ? "bg-primary text-primary-foreground" : "bg-accent/30 text-muted-foreground"}`}>{homeTeam} · 홈</button>
+              <button onClick={() => setH2hFilter("away")} className={`px-3 py-1.5 rounded-full text-xs font-medium ${h2hFilter === "away" ? "bg-primary text-primary-foreground" : "bg-accent/30 text-muted-foreground"}`}>{awayTeam} · 원정</button>
+            </div>
+            {(() => {
+              const filtered = h2hFilter === "all" ? h2hRecords : h2hFilter === "home" ? h2hRecords.filter((r) => r.homeTeam === homeTeam) : h2hRecords.filter((r) => r.awayTeam === awayTeam);
+              if (filtered.length === 0) return <p className="text-xs text-muted-foreground text-center py-4">해당 조건의 맞대결 기록이 없습니다.</p>;
+              return (
+                <div className="space-y-1">
+                  {filtered.map((r, i) => (
+                    <div key={i} className="flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-accent/20 text-xs">
+                      <span className="text-muted-foreground shrink-0 w-16">{new Date(r.date).toLocaleDateString("ko-KR", { year: "2-digit", month: "2-digit", day: "2-digit" })}</span>
+                      <span className="text-muted-foreground shrink-0 w-10 truncate">{r.league ?? ""}</span>
+                      <span className="flex-1 truncate text-right">{r.homeTeam}</span>
+                      <span className="font-bold text-foreground shrink-0 w-12 text-center">{r.homeScore} : {r.awayScore}</span>
+                      <span className="flex-1 truncate">{r.awayTeam}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              );
+            })()}
+          </>
+        ) : (
+          <>
+            <p className="text-xs text-muted-foreground text-center mb-3">두 팀의 맞대결 기록이 없습니다 — 각 팀의 최근 경기를 대신 보여드립니다.</p>
+            <div className="flex gap-1.5 mb-3">
+              <button onClick={() => setH2hFilter("all")} className={`px-3 py-1.5 rounded-full text-xs font-bold ${h2hFilter === "all" ? "bg-primary text-primary-foreground" : "bg-accent/30 text-muted-foreground"}`}>전체</button>
+              <button onClick={() => setH2hFilter("home")} className={`px-3 py-1.5 rounded-full text-xs font-medium ${h2hFilter === "home" ? "bg-primary text-primary-foreground" : "bg-accent/30 text-muted-foreground"}`}>{homeTeam} · 홈</button>
+              <button onClick={() => setH2hFilter("away")} className={`px-3 py-1.5 rounded-full text-xs font-medium ${h2hFilter === "away" ? "bg-primary text-primary-foreground" : "bg-accent/30 text-muted-foreground"}`}>{awayTeam} · 원정</button>
             </div>
-          </div>
+            {h2hFilter === "all" && (
+              <div className="space-y-4">
+                <GameList teamName={homeTeam} games={recentGames.homeTeamAllGames as GameRow[]} />
+                <div className="border-t border-border/30 pt-3">
+                  <GameList teamName={awayTeam} games={recentGames.awayTeamAllGames as GameRow[]} />
+                </div>
+              </div>
+            )}
+            {h2hFilter === "home" && <GameList teamName={homeTeam} games={recentGames.homeTeamHomeGames as GameRow[]} />}
+            {h2hFilter === "away" && <GameList teamName={awayTeam} games={recentGames.awayTeamAwayGames as GameRow[]} />}
+          </>
         )}
-
-        <div className="flex gap-1.5 mb-3">
-          <button onClick={() => setH2hFilter("all")} className={`px-3 py-1.5 rounded-full text-xs font-bold ${h2hFilter === "all" ? "bg-primary text-primary-foreground" : "bg-accent/30 text-muted-foreground"}`}>전체</button>
-          <button onClick={() => setH2hFilter("home")} className={`px-3 py-1.5 rounded-full text-xs font-medium ${h2hFilter === "home" ? "bg-primary text-primary-foreground" : "bg-accent/30 text-muted-foreground"}`}>{homeTeam} · 홈</button>
-          <button onClick={() => setH2hFilter("away")} className={`px-3 py-1.5 rounded-full text-xs font-medium ${h2hFilter === "away" ? "bg-primary text-primary-foreground" : "bg-accent/30 text-muted-foreground"}`}>{awayTeam} · 원정</button>
-        </div>
-
-        {h2hFilter === "all" && (
-          <div className="space-y-4">
-            <GameList teamName={homeTeam} games={recentGames.homeTeamAllGames as GameRow[]} />
-            <div className="border-t border-border/30 pt-3">
-              <GameList teamName={awayTeam} games={recentGames.awayTeamAllGames as GameRow[]} />
-            </div>
-          </div>
-        )}
-        {h2hFilter === "home" && <GameList teamName={homeTeam} games={recentGames.homeTeamHomeGames as GameRow[]} />}
-        {h2hFilter === "away" && <GameList teamName={awayTeam} games={recentGames.awayTeamAwayGames as GameRow[]} />}
       </TabsContent>
 
       {/* 순위표 */}
