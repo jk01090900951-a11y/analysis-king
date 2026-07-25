@@ -5,7 +5,7 @@ import path from "path";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "./routers";
 import { createContext } from "./_core/trpc";
-import { ensureBootstrapAdmin, refreshLiveMatchStatuses } from "./db";
+import { ensureBootstrapAdmin, refreshLiveMatchStatuses, autoSyncAllLeagues, getSyncScheduleSettings } from "./db";
 import { ENV } from "./_core/env";
 
 const app = express();
@@ -36,4 +36,29 @@ ensureBootstrapAdmin().finally(() => {
       .then((r) => { if (r.updated > 0) console.log(`[경기상태 자동갱신] 확인 ${r.checked}건 중 ${r.updated}건 갱신됨`); })
       .catch((e) => console.error("[경기상태 자동갱신 실패]", e));
   }, 5 * 60 * 1000);
+
+  // 2026 신규: 관리자가 지정한 요일+시간에 맞춰 전체 리그 자동 동기화 (매분 확인, 같은 분에 중복 실행 방지)
+  // 예) 요일=월,수,금 시간=00:00 으로 설정하면 그 요일 그 시각에만 실행됨. 수동 버튼은 이 스케줄과 별개로 항상 사용 가능.
+  const DAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+  let lastAutoSyncMinuteKey = "";
+  setInterval(() => {
+    getSyncScheduleSettings()
+      .then((schedule) => {
+        if (!schedule.enabled) return;
+        const now = new Date();
+        const todayKey = DAY_KEYS[now.getDay()];
+        const hh = String(now.getHours()).padStart(2, "0");
+        const mm = String(now.getMinutes()).padStart(2, "0");
+        const nowTime = `${hh}:${mm}`;
+        const minuteKey = `${now.toDateString()}_${nowTime}`;
+        if (schedule.days.includes(todayKey!) && schedule.time === nowTime && lastAutoSyncMinuteKey !== minuteKey) {
+          lastAutoSyncMinuteKey = minuteKey;
+          console.log(`[예약 자동동기화] ${todayKey} ${nowTime} 조건 일치 — 실행 시작`);
+          autoSyncAllLeagues()
+            .then((r) => console.log(`[예약 자동동기화] 리그 ${r.checked}개 확인 — 성공 ${r.synced}, 실패 ${r.failed}`))
+            .catch((e) => console.error("[예약 자동동기화 실패]", e));
+        }
+      })
+      .catch((e) => console.error("[동기화 스케줄 확인 실패]", e));
+  }, 60 * 1000);
 });

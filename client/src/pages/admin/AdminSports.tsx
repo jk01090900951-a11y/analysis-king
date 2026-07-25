@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, Wifi, RefreshCw, Download, Pencil, Trash2 } from "lucide-react";
+import { Plus, Wifi, RefreshCw, Download, Pencil, Trash2, History, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 export default function AdminSports() {
@@ -27,6 +27,31 @@ export default function AdminSports() {
   const [selectedLeagues, setSelectedLeagues] = useState<Record<string, "major" | "minor">>({});
   const [foundLeagues, setFoundLeagues] = useState<any[]>([]);
   const [searchingLeagues, setSearchingLeagues] = useState(false);
+  const [backfillTarget, setBackfillTarget] = useState<any>(null);
+  const [backfillSeasonCount, setBackfillSeasonCount] = useState(3);
+
+  // 2026 신규: 자동 동기화 스케줄 (요일+시간)
+  const { data: schedule } = trpc.admin.getSyncSchedule.useQuery();
+  const [scheduleEnabled, setScheduleEnabled] = useState(true);
+  const [scheduleDays, setScheduleDays] = useState<Set<string>>(new Set(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]));
+  const [scheduleTime, setScheduleTime] = useState("03:00");
+  useEffect(() => {
+    if (schedule) {
+      setScheduleEnabled(schedule.enabled);
+      setScheduleDays(new Set(schedule.days));
+      setScheduleTime(schedule.time);
+    }
+  }, [schedule]);
+  const updateSchedule = trpc.admin.updateSyncSchedule.useMutation({
+    onSuccess: () => toast.success("자동 동기화 스케줄 저장 완료"),
+    onError: (e) => toast.error(e.message),
+  });
+  const runFullSyncNow = trpc.admin.runFullSyncNow.useMutation({
+    onSuccess: (r: any) => { toast.success(`수동 전체 동기화 완료 — 리그 ${r.checked}개 확인, 성공 ${r.synced}, 실패 ${r.failed}`); utils.match.list.invalidate(); },
+    onError: (e) => toast.error(e.message),
+  });
+  const dayLabels: [string, string][] = [["mon", "월"], ["tue", "화"], ["wed", "수"], ["thu", "목"], ["fri", "금"], ["sat", "토"], ["sun", "일"]];
+  const toggleDay = (d: string) => setScheduleDays((prev) => { const next = new Set(prev); if (next.has(d)) next.delete(d); else next.add(d); return next; });
 
   const createLeague = trpc.sport.createLeague.useMutation({
     onSuccess: (r: any) => { toast.success(r.reactivated ? "비활성화됐던 리그를 다시 활성화했습니다" : "리그 추가 완료"); utils.sport.allLeagues.invalidate(); setLeagueDialog(false); },
@@ -58,6 +83,15 @@ export default function AdminSports() {
   });
   const syncBaseball = trpc.sport.syncBaseballGames.useMutation({
     onSuccess: (r: any) => toast.success(`${r.usedSeason} 시즌 기준 — 신규 ${r.created}건, 기존 ${r.skipped}건 (총 ${r.total}건 조회)`),
+    onError: (e) => toast.error(e.message),
+  });
+  const backfillSeasons = trpc.sport.backfillSeasons.useMutation({
+    onSuccess: (r: any) => {
+      const detail = Object.entries(r.perSeason).map(([s, c]) => `${s}시즌 ${c}건`).join(", ");
+      toast.success(`백필 완료 — 신규 ${r.created}건, 기존 ${r.skipped}건, 실패 ${r.failed}건 (${detail})`, { duration: 8000 });
+      utils.sport.allLeagues.invalidate();
+      setBackfillTarget(null);
+    },
     onError: (e) => toast.error(e.message),
   });
   const sportNameOf = (sportId: number) => (sports ?? []).find((s: any) => s.id === sportId)?.name;
@@ -158,6 +192,47 @@ export default function AdminSports() {
         </div>
       </div>
 
+      {/* 2026 신규: 경기 자동/수동 동기화 — 항상 둘 다 눈에 보이게 */}
+      <div className="mb-8 p-4 rounded-xl border-2 border-primary/30 bg-primary/5">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <RefreshCw className="w-4 h-4 text-primary" />
+            <h2 className="font-bold text-sm">경기 자동 동기화</h2>
+            <span className={`text-xs px-2 py-0.5 rounded-full ${scheduleEnabled ? "bg-green-500/20 text-green-400" : "bg-muted text-muted-foreground"}`}>
+              {scheduleEnabled ? "사용중" : "꺼짐"}
+            </span>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => runFullSyncNow.mutate()} disabled={runFullSyncNow.isPending} className="border-primary/40">
+            <Zap className="w-4 h-4 mr-1" />{runFullSyncNow.isPending ? "동기화 중..." : "지금 수동으로 전체 동기화"}
+          </Button>
+        </div>
+        <div className="flex flex-wrap items-center gap-4">
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <Checkbox checked={scheduleEnabled} onCheckedChange={(c) => setScheduleEnabled(!!c)} />
+            자동 동기화 사용
+          </label>
+          <div className="flex items-center gap-1.5">
+            {dayLabels.map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => toggleDay(key)}
+                className={`w-8 h-8 rounded-lg text-xs font-bold ${scheduleDays.has(key) ? "bg-primary text-primary-foreground" : "bg-accent/30 text-muted-foreground"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-muted-foreground">시간</span>
+            <Input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="w-28 h-8 text-sm" />
+          </div>
+          <Button size="sm" onClick={() => updateSchedule.mutate({ enabled: scheduleEnabled, days: Array.from(scheduleDays), time: scheduleTime })} disabled={updateSchedule.isPending}>
+            저장
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground mt-2">체크한 요일의 지정 시간에 등록된 모든 리그를 자동으로 동기화합니다. 예: 월/수/금 + 00:00 → 매주 월·수·금 자정에 실행. 언제든 위 "지금 수동으로 전체 동기화" 버튼으로 즉시 실행할 수도 있습니다.</p>
+      </div>
+
       <h2 className="font-bold mb-2 text-sm text-muted-foreground">종목 ({sports?.length ?? 0}) — 종목 추가는 개발자에게 요청하시면 SPORT_BASE 설정 한 줄로 확장됩니다</h2>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-8">
         {(sports ?? []).map((s: any) => (
@@ -186,6 +261,11 @@ export default function AdminSports() {
               {l.externalLeagueId && (
                 <Button size="sm" variant="ghost" onClick={() => syncLeague(l)} disabled={syncFixtures.isPending || syncBaseball.isPending}>
                   <RefreshCw className="w-3.5 h-3.5 mr-1" />경기 동기화
+                </Button>
+              )}
+              {l.externalLeagueId && (
+                <Button size="sm" variant="ghost" onClick={() => setBackfillTarget(l)}>
+                  <History className="w-3.5 h-3.5 mr-1" />과거 시즌 채우기
                 </Button>
               )}
               <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => { setLeagueEditForm(l); setLeagueEditDialog(true); }}>
@@ -326,6 +406,39 @@ export default function AdminSports() {
             <Input placeholder="API-Sports 리그ID" value={leagueEditForm.externalLeagueId ?? ""} onChange={(e) => setLeagueEditForm({ ...leagueEditForm, externalLeagueId: e.target.value })} />
           </div>
           <Button className="w-full mt-3" onClick={() => updateLeague.mutate({ id: leagueEditForm.id, name: leagueEditForm.name, country: leagueEditForm.country, tier: leagueEditForm.tier, externalLeagueId: leagueEditForm.externalLeagueId })}>저장</Button>
+        </DialogContent>
+      </Dialog>
+
+      {/* 과거 시즌 초기 백필 */}
+      <Dialog open={!!backfillTarget} onOpenChange={(o) => !o && setBackfillTarget(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>과거 시즌 채우기 — {backfillTarget?.name}</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              이 리그의 최근 몇 시즌을 한 번에 몰아서 가져올지 선택하세요. 리그 전체(모든 팀)의 경기가 한꺼번에 쌓입니다. 시즌이 많을수록 API 요청도 늘어납니다.
+            </p>
+            <Select value={String(backfillSeasonCount)} onValueChange={(v) => setBackfillSeasonCount(Number(v))}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="1">최근 1시즌</SelectItem>
+                <SelectItem value="2">최근 2시즌</SelectItem>
+                <SelectItem value="3">최근 3시즌 (권장)</SelectItem>
+                <SelectItem value="4">최근 4시즌</SelectItem>
+                <SelectItem value="5">최근 5시즌</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              className="w-full"
+              disabled={backfillSeasons.isPending}
+              onClick={() => {
+                const thisYear = new Date().getFullYear();
+                const seasons = Array.from({ length: backfillSeasonCount }, (_, i) => thisYear - i);
+                backfillSeasons.mutate({ leagueId: backfillTarget.id, seasons });
+              }}
+            >
+              {backfillSeasons.isPending ? "채우는 중... (시간이 걸릴 수 있습니다)" : "지금 채우기"}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

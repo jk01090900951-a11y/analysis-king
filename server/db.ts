@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import bcrypt from "bcryptjs";
 import { InsertUser, users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory, pitcherStartHistory, playerAppearanceLog } from "../drizzle/schema";
 import { ENV } from './_core/env';
-import { fetchUpcomingFixtures, fetchFixtureById, fetchUpcomingBaseballGames, fetchStandings, fetchFixtureStatistics, fetchFixtureEvents, fetchFixturePlayerStats, ApiFootballFixture } from './_core/apiSports';
+import { fetchUpcomingFixtures, fetchFixtureById, fetchUpcomingBaseballGames, fetchStandings, fetchFixtureStatistics, fetchFixtureEvents, fetchFixturePlayerStats, fetchFullSeasonFixtures, ApiFootballFixture } from './_core/apiSports';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -447,6 +447,7 @@ export async function bulkImportLeagues(sportId: number, items: { externalLeague
   const db = await getDb();
   if (!db) throw new Error("데이터베이스에 연결할 수 없습니다.");
   let created = 0, skipped = 0, reactivated = 0;
+  const newLeagueIds: number[] = [];
   for (const item of items) {
     const existing = await db.select().from(leagues).where(eq(leagues.externalLeagueId, item.externalLeagueId)).limit(1);
     if (existing.length > 0) {
@@ -454,17 +455,37 @@ export async function bulkImportLeagues(sportId: number, items: { externalLeague
         // 예전에 삭제(비활성화)했던 리그를 다시 가져오는 경우 → 새로 만들지 않고 재활성화
         await db.update(leagues).set({ isActive: true, tier: item.tier }).where(eq(leagues.id, existing[0]!.id));
         reactivated++;
+        newLeagueIds.push(existing[0]!.id);
       } else {
         skipped++;
       }
       continue;
     }
-    await db.insert(leagues).values({
+    const result: any = await db.insert(leagues).values({
       sportId, name: item.name, country: item.country, logoUrl: item.logoUrl ?? null,
       externalLeagueId: item.externalLeagueId, tier: item.tier,
     });
     created++;
+    const newId = result?.[0]?.insertId ?? result?.insertId;
+    if (newId) newLeagueIds.push(newId);
   }
+
+  // 2026 신규: 새로 등록(또는 재활성화)된 리그는 자동으로 "과거 2시즌 백필 + 최신 경기 동기화"를 백그라운드로 실행
+  // (응답은 기다리지 않음 — 관리자는 바로 "가져오기 완료" 결과를 받고, 데이터는 뒤에서 계속 채워짐)
+  if (newLeagueIds.length > 0) {
+    const sportRows = await db.select().from(sports).where(eq(sports.id, sportId)).limit(1);
+    const sportName = sportRows[0]?.name;
+    const thisYear = new Date().getFullYear();
+    for (const leagueId of newLeagueIds) {
+      if (sportName === "축구") {
+        backfillLeagueSeasons(leagueId, [thisYear, thisYear - 1]).catch((e) => console.warn(`[신규리그 자동백필 실패] leagueId=${leagueId}:`, e));
+        syncFootballFixturesForLeague(leagueId, thisYear).catch((e) => console.warn(`[신규리그 자동동기화 실패] leagueId=${leagueId}:`, e));
+      } else if (sportName === "야구") {
+        syncBaseballGamesForLeague(leagueId, thisYear).catch((e) => console.warn(`[신규리그 자동동기화 실패] leagueId=${leagueId}:`, e));
+      }
+    }
+  }
+
   return { created, skipped, reactivated };
 }
 
@@ -568,6 +589,57 @@ export async function saveFetchedHistoricalFixture(fixture: {
     externalId: fixture.externalId, status: "finished",
   });
   return { saved: true };
+}
+
+// 2026 신규: 관리자가 한 번에 여러 시즌을 몰아서 채우는 "초기 백필" — 리그 전체를 시즌 단위로 한 번에 가져옴
+// (팀별 last=50 방식보다 훨씬 효율적: API 호출 1번으로 그 시즌 그 리그의 모든 팀 경기가 다 들어옴)
+export async function backfillLeagueSeasons(leagueId: number, seasons: number[]) {
+  const db = await getDb();
+  if (!db) throw new Error("데이터베이스에 연결할 수 없습니다.");
+  const leagueRows = await db.select().from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+  const league = leagueRows[0];
+  if (!league) throw new Error("리그를 찾을 수 없습니다.");
+  if (!league.externalLeagueId) throw new Error("이 리그에 API-Sports 리그ID가 없어 백필할 수 없습니다.");
+
+  let created = 0, skipped = 0, failed = 0;
+  const perSeason: Record<number, number> = {};
+
+  for (const season of seasons) {
+    try {
+      const fixtures = await fetchFullSeasonFixtures(league.externalLeagueId, season);
+      let seasonCreated = 0;
+      for (const f of fixtures) {
+        try {
+          const externalId = String(f.fixture.id);
+          const existing = await db.select({ id: matches.id }).from(matches).where(eq(matches.externalId, externalId)).limit(1);
+          if (existing.length > 0) { skipped++; continue; }
+
+          const statusShort = f.fixture.status.short;
+          const isFinished = ["FT", "AET", "PEN"].includes(statusShort);
+          const homeScore = f.goals.home, awayScore = f.goals.away;
+          await db.insert(matches).values({
+            leagueId: league.id, homeTeam: f.teams.home.name, awayTeam: f.teams.away.name,
+            homeTeamLogo: f.teams.home.logo, awayTeamLogo: f.teams.away.logo,
+            matchDate: new Date(f.fixture.date), venue: f.fixture.venue?.name ?? null,
+            homeScore, awayScore,
+            result: isFinished && homeScore != null && awayScore != null ? (homeScore > awayScore ? "home" : homeScore < awayScore ? "away" : "draw") : null,
+            totalGoals: isFinished && homeScore != null && awayScore != null ? homeScore + awayScore : null,
+            externalId, apiData: f as unknown as Record<string, unknown>,
+            status: isFinished ? "finished" : (["1H", "2H", "HT", "ET", "P", "BT", "LIVE"].includes(statusShort) ? "live" : "scheduled"),
+          });
+          created++; seasonCreated++;
+        } catch (e) {
+          failed++;
+          console.warn(`[백필 개별경기 저장 실패, 계속 진행] leagueId=${leagueId} season=${season}:`, e);
+        }
+      }
+      perSeason[season] = seasonCreated;
+    } catch (e) {
+      console.warn(`[백필 시즌 조회 실패] leagueId=${leagueId} season=${season}:`, e);
+      perSeason[season] = 0;
+    }
+  }
+  return { created, skipped, failed, perSeason };
 }
 
 
@@ -697,6 +769,55 @@ export async function syncBaseballGamesForLeague(leagueId: number, season: numbe
     created++;
   }
   return { created, skipped, total: games.length, usedSeason };
+}
+
+// 2026 신규: 관리자가 설정한 자동 동기화 스케줄(요일+시간) 조회 — index.ts의 스케줄러가 매분 확인할 때 사용
+export async function getSyncScheduleSettings() {
+  const db = await getDb();
+  if (!db) return { enabled: true, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], time: "03:00" };
+  const keys = ["sync.auto_enabled", "sync.schedule_days", "sync.schedule_time"];
+  const rows = await db.select().from(systemSettings).where(inArray(systemSettings.key, keys));
+  const get = (k: string, fallback: string) => rows.find((r) => r.key === k)?.value ?? fallback;
+  return {
+    enabled: get("sync.auto_enabled", "true") === "true",
+    days: get("sync.schedule_days", "mon,tue,wed,thu,fri,sat,sun").split(",").filter(Boolean),
+    time: get("sync.schedule_time", "03:00"),
+  };
+}
+
+// 2026 신규: 등록된 모든 리그를 매일 자동으로 순회하며 새 경기를 동기화 (관리자가 매번 수동으로 안 눌러도 됨)
+// API-Sports 리그ID가 있고 활성화된 리그만 대상. 종목에 따라 축구/야구 동기화 함수를 자동 분기.
+export async function autoSyncAllLeagues() {
+  const db = await getDb();
+  if (!db) return { checked: 0, synced: 0, failed: 0 };
+
+  const rows = await db.select({
+    id: leagues.id, externalLeagueId: leagues.externalLeagueId, sportName: sports.name,
+  })
+    .from(leagues)
+    .leftJoin(sports, eq(leagues.sportId, sports.id))
+    .where(and(eq(leagues.isActive, true), sql`${leagues.externalLeagueId} IS NOT NULL`));
+
+  const currentYear = new Date().getFullYear();
+  let synced = 0, failed = 0;
+  for (const l of rows) {
+    try {
+      if (l.sportName === "축구") {
+        await syncFootballFixturesForLeague(l.id, currentYear);
+      } else if (l.sportName === "야구") {
+        await syncBaseballGamesForLeague(l.id, currentYear);
+      } else {
+        continue; // 다른 종목은 아직 자동 동기화 미구현 (수동 버튼만 사용)
+      }
+      synced++;
+    } catch (e) {
+      failed++;
+      console.warn(`[일일 자동동기화 실패] leagueId=${l.id}:`, e);
+    }
+    // 리그마다 살짝 텀을 둬서 API 요청이 한꺼번에 몰리지 않도록 함
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return { checked: rows.length, synced, failed };
 }
 
 

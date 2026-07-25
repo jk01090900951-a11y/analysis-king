@@ -331,6 +331,13 @@ export interface TeamRecentFixture {
   externalId: string; date: string; homeTeam: string; awayTeam: string; homeScore: number | null; awayScore: number | null;
   league: string; leagueExternalId: string; homeTeamLogo: string | null; awayTeamLogo: string | null; venue: string | null;
 }
+// 2026 신규: 리그 시즌 전체 경기 조회 (백필용 — 팀별로 나눠 부르지 않고 리그 한 번에 그 시즌 전체를 가져옴)
+export async function fetchFullSeasonFixtures(leagueExternalId: string, season: number): Promise<ApiFootballFixture[]> {
+  const url = `${FOOTBALL_BASE}/fixtures?league=${leagueExternalId}&season=${season}`;
+  const data = await apiSportsGet<{ response: ApiFootballFixture[] }>(url);
+  return data.response ?? [];
+}
+
 export async function fetchTeamRecentFixtures(teamId: number, last: number = 10): Promise<TeamRecentFixture[]> {
   const url = `${FOOTBALL_BASE}/fixtures?team=${teamId}&last=${last}&status=FT`;
   const data = await apiSportsGet<{ response: ApiFootballFixture[] }>(url);

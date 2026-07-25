@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { and, eq, desc, gte, lte, sql, isNull, inArray } from "drizzle-orm";
-import { getDb, verifyLogin, getAllUsers, createAdmin, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getMatchIdsByFilter, getAllBots, getBotById, getBotPicksForMatch, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow, syncFootballFixturesForLeague, syncBaseballGamesForLeague, bulkImportLeagues, refreshLiveMatchStatuses, deleteMatchesBefore, getTeamHomeAwayRecord, splitH2hByVenue, getTeamRecentGamesList, getStandings, saveFetchedHistoricalFixture } from "./db";
+import { getDb, verifyLogin, getAllUsers, createAdmin, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getMatchIdsByFilter, getAllBots, getBotById, getBotPicksForMatch, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow, syncFootballFixturesForLeague, syncBaseballGamesForLeague, bulkImportLeagues, refreshLiveMatchStatuses, deleteMatchesBefore, getTeamHomeAwayRecord, splitH2hByVenue, getTeamRecentGamesList, getStandings, saveFetchedHistoricalFixture, backfillLeagueSeasons, autoSyncAllLeagues } from "./db";
 import { testApiSportsConnection, fetchCountries, searchLeaguesByCountry, SUPPORTED_SPORTS, fetchHeadToHead, fetchInjuries, fetchLineups, fetchOdds, fetchTeamStatistics, fetchTeamCoach, fetchCoachTrophies, fetchTeamTransfers, fetchTeamRecentFixtures, fetchFixtureEvents, fetchFixtureStatistics, fetchFixturePlayerStats } from "./_core/apiSports";
 import { users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory } from "../drizzle/schema";
 import { storagePut } from "./storage";
@@ -55,7 +55,7 @@ export async function ensureMatchDetailData(matchId: number) {
       const homeTeamId = apiTeams?.home?.id;
       const awayTeamId = apiTeams?.away?.id;
       if (homeTeamId && awayTeamId && match.sportName?.includes("축구")) {
-        const realH2h = await fetchHeadToHead(homeTeamId, awayTeamId, 25);
+        const realH2h = await fetchHeadToHead(homeTeamId, awayTeamId, 50);
         if (realH2h.length > 0) {
           const homeWins = realH2h.filter((r) => r.result === "home" && r.homeTeam === match.homeTeam).length
             + realH2h.filter((r) => r.result === "away" && r.awayTeam === match.homeTeam).length;
@@ -457,6 +457,10 @@ export const appRouter = router({
     syncBaseballGames: adminProcedure
       .input(z.object({ leagueId: z.number(), season: z.number().default(new Date().getFullYear()) }))
       .mutation(({ input }) => syncBaseballGamesForLeague(input.leagueId, input.season)),
+    // 2026 신규: 초기 몇 시즌을 한 번에 몰아서 채우는 백필 (리그 전체, 팀별 아님)
+    backfillSeasons: adminProcedure
+      .input(z.object({ leagueId: z.number(), seasons: z.array(z.number()).min(1).max(6) }))
+      .mutation(({ input }) => backfillLeagueSeasons(input.leagueId, input.seasons)),
     // 2026 신규: 리그 순위표 (공개조회, 6시간 캐시)
     standings: publicProcedure
       .input(z.object({ leagueId: z.number(), season: z.number().default(new Date().getFullYear()) }))
@@ -711,10 +715,10 @@ export const appRouter = router({
         // 2026 신규: 와이즈토토 스타일 — 전체/홈/원정 탭에 실제 최근 경기 리스트 (각 5경기)
         const asOf = new Date(match.matchDate);
         let [homeTeamAllGames, awayTeamAllGames, homeTeamHomeGames, awayTeamAwayGames] = await Promise.all([
-          getTeamRecentGamesList(match.homeTeam, "all", asOf, 25),
-          getTeamRecentGamesList(match.awayTeam, "all", asOf, 25),
-          getTeamRecentGamesList(match.homeTeam, "home", asOf, 25),
-          getTeamRecentGamesList(match.awayTeam, "away", asOf, 25),
+          getTeamRecentGamesList(match.homeTeam, "all", asOf, 50),
+          getTeamRecentGamesList(match.awayTeam, "all", asOf, 50),
+          getTeamRecentGamesList(match.homeTeam, "home", asOf, 50),
+          getTeamRecentGamesList(match.awayTeam, "away", asOf, 50),
         ]);
 
         // 우리 DB 누적이 아직 적은 리그(막 추적 시작한 리그 등)는 API에서 직접 팀 최근경기를 가져와 보완
@@ -730,17 +734,17 @@ export const appRouter = router({
             return { id: -1000 - idx, date: new Date(f.date), isHome, opponent: isHome ? f.awayTeam : f.homeTeam, teamScore, oppScore, outcome, leagueName: f.league };
           };
           if (homeTeamAllGames.length < 3 && homeTeamId) {
-            const fresh = await fetchTeamRecentFixtures(homeTeamId, 25);
+            const fresh = await fetchTeamRecentFixtures(homeTeamId, 50);
             homeTeamAllGames = fresh.map((f, i) => toGameRow(f, match.homeTeam, i));
             homeTeamHomeGames = fresh.filter((f) => f.homeTeam === match.homeTeam).map((f, i) => toGameRow(f, match.homeTeam, i));
             // 화면에만 잠깐 보여주고 버리지 않고, 우리 DB에도 실제로 저장 (다음부터는 API 재호출 없이 우리 데이터에서 바로 나옴)
-            for (const f of fresh) { await saveFetchedHistoricalFixture(f); }
+            for (const f of fresh) { try { await saveFetchedHistoricalFixture(f); } catch (saveErr) { console.warn(`[개별경기 저장 실패, 계속 진행] externalId=${f.externalId}:`, saveErr); } }
           }
           if (awayTeamAllGames.length < 3 && awayTeamId) {
-            const fresh = await fetchTeamRecentFixtures(awayTeamId, 25);
+            const fresh = await fetchTeamRecentFixtures(awayTeamId, 50);
             awayTeamAllGames = fresh.map((f, i) => toGameRow(f, match.awayTeam, i));
             awayTeamAwayGames = fresh.filter((f) => f.awayTeam === match.awayTeam).map((f, i) => toGameRow(f, match.awayTeam, i));
-            for (const f of fresh) { await saveFetchedHistoricalFixture(f); }
+            for (const f of fresh) { try { await saveFetchedHistoricalFixture(f); } catch (saveErr) { console.warn(`[개별경기 저장 실패, 계속 진행] externalId=${f.externalId}:`, saveErr); } }
           }
         } catch (e) {
           console.warn(`[팀 최근경기 API 보완 실패] match=${input.matchId}:`, e);
@@ -970,6 +974,34 @@ export const appRouter = router({
         }
         return { success: true };
       }),
+    // 2026 신규: 경기 자동 동기화 스케줄 (요일+시간 직접 지정) — 항상 수동 버튼과 병행
+    getSyncSchedule: adminProcedure.query(async () => {
+      const db = await getDb(); if (!db) return { enabled: true, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], time: "03:00" };
+      const keys = ["sync.auto_enabled", "sync.schedule_days", "sync.schedule_time"];
+      const rows = await db.select().from(systemSettings).where(inArray(systemSettings.key, keys));
+      const get = (k: string, fallback: string) => rows.find((r) => r.key === k)?.value ?? fallback;
+      return {
+        enabled: get("sync.auto_enabled", "true") === "true",
+        days: get("sync.schedule_days", "mon,tue,wed,thu,fri,sat,sun").split(",").filter(Boolean),
+        time: get("sync.schedule_time", "03:00"),
+      };
+    }),
+    updateSyncSchedule: adminProcedure
+      .input(z.object({ enabled: z.boolean(), days: z.array(z.string()), time: z.string() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const upsert = async (key: string, value: string) => {
+          const exists = await db.select().from(systemSettings).where(eq(systemSettings.key, key)).limit(1);
+          if (exists.length > 0) await db.update(systemSettings).set({ value }).where(eq(systemSettings.key, key));
+          else await db.insert(systemSettings).values({ key, value });
+        };
+        await upsert("sync.auto_enabled", String(input.enabled));
+        await upsert("sync.schedule_days", input.days.join(","));
+        await upsert("sync.schedule_time", input.time);
+        return { success: true };
+      }),
+    // 수동 "지금 전체 동기화" — 자동 스케줄과 무관하게 항상 사용 가능
+    runFullSyncNow: adminProcedure.mutation(() => autoSyncAllLeagues()),
     // 지정한 날짜 이전 경기에 이미 생성된 분석글(봇 글)만 삭제 — 경기 자체나 상세데이터(라인업 등)는 유지
     cleanupOldAnalyses: adminProcedure
       .input(z.object({ beforeDate: z.string() }))
