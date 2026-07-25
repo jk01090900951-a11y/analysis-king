@@ -23,6 +23,7 @@ export default function AdminSports() {
 
   const [importDialog, setImportDialog] = useState(false);
   const [importSportId, setImportSportId] = useState<number | null>(null);
+  const [importCategory, setImportCategory] = useState<"tournament" | "bigleague" | "country">("tournament");
   const [selectedCountries, setSelectedCountries] = useState<Set<string>>(new Set());
   const [selectedLeagues, setSelectedLeagues] = useState<Record<string, "major" | "minor">>({});
   const [foundLeagues, setFoundLeagues] = useState<any[]>([]);
@@ -126,6 +127,37 @@ export default function AdminSports() {
     }
   };
 
+  // 2026 신규: [대회] — 월드컵/챔피언스리그/유로파리그 등 국가대항전은 API-Sports에서 country="World"로 분류됨
+  const searchTournaments = async () => {
+    if (!importSport) return;
+    setSearchingLeagues(true);
+    try {
+      const results = await utils.client.sport.searchLeagues.query({ sportName: importSport.name, country: "World" });
+      setFoundLeagues(results);
+    } catch (e: any) {
+      toast.error(e?.message ?? "대회 검색 실패");
+    } finally {
+      setSearchingLeagues(false);
+    }
+  };
+
+  // 2026 신규: [빅리그] — 인기 축구 리그가 있는 나라들을 미리 정해두고 한 번에 검색 (실제 빅리그 이름은 목록에서 직접 체크)
+  const BIG_LEAGUE_COUNTRIES = ["Germany", "Spain", "Italy", "England", "France", "South Korea"];
+  const searchBigLeagues = async () => {
+    if (!importSport) return;
+    setSearchingLeagues(true);
+    try {
+      const results = await Promise.all(
+        BIG_LEAGUE_COUNTRIES.map((country) => utils.client.sport.searchLeagues.query({ sportName: importSport.name, country }))
+      );
+      setFoundLeagues(results.flat());
+    } catch (e: any) {
+      toast.error(e?.message ?? "빅리그 검색 실패");
+    } finally {
+      setSearchingLeagues(false);
+    }
+  };
+
   const toggleCountry = (name: string, checked: boolean) => {
     setSelectedCountries((prev) => {
       const next = new Set(prev);
@@ -187,7 +219,7 @@ export default function AdminSports() {
             <SelectTrigger className="w-40 h-9 text-sm"><Wifi className="w-3.5 h-3.5 mr-1" /><SelectValue placeholder="API 연결 테스트" /></SelectTrigger>
             <SelectContent>{(sports ?? []).map((s: any) => <SelectItem key={s.id} value={s.name}>{s.icon} {s.name} 테스트</SelectItem>)}</SelectContent>
           </Select>
-          <Button size="sm" onClick={() => setImportDialog(true)}><Download className="w-4 h-4 mr-1" />나라별 리그 가져오기</Button>
+          <Button size="sm" onClick={() => setImportDialog(true)}><Download className="w-4 h-4 mr-1" />리그 가져오기</Button>
           <Button size="sm" variant="outline" onClick={() => setLeagueDialog(true)}><Plus className="w-4 h-4 mr-1" />리그 직접 추가</Button>
         </div>
       </div>
@@ -282,7 +314,7 @@ export default function AdminSports() {
       {/* 나라별 리그 대량 가져오기 */}
       <Dialog open={importDialog} onOpenChange={(o) => { setImportDialog(o); if (!o) { setSelectedCountries(new Set()); setFoundLeagues([]); setSelectedLeagues({}); } }}>
         <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>나라별 리그 가져오기</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>리그 가져오기 (대회 · 빅리그 · 나라별)</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <Select value={importSportId ? String(importSportId) : undefined} onValueChange={(v) => { setImportSportId(Number(v)); setSelectedCountries(new Set()); setFoundLeagues([]); setSelectedLeagues({}); }}>
               <SelectTrigger><SelectValue placeholder="① 종목 선택" /></SelectTrigger>
@@ -290,9 +322,35 @@ export default function AdminSports() {
             </Select>
 
             {importSportId && (
+              <div className="grid grid-cols-3 gap-1.5">
+                <button onClick={() => { setImportCategory("tournament"); setFoundLeagues([]); setSelectedLeagues({}); }} className={`py-2 rounded-lg text-xs font-bold ${importCategory === "tournament" ? "bg-primary text-primary-foreground" : "bg-accent/30 text-muted-foreground"}`}>대회</button>
+                <button onClick={() => { setImportCategory("bigleague"); setFoundLeagues([]); setSelectedLeagues({}); }} className={`py-2 rounded-lg text-xs font-bold ${importCategory === "bigleague" ? "bg-primary text-primary-foreground" : "bg-accent/30 text-muted-foreground"}`}>빅리그</button>
+                <button onClick={() => { setImportCategory("country"); setFoundLeagues([]); setSelectedLeagues({}); }} className={`py-2 rounded-lg text-xs font-bold ${importCategory === "country" ? "bg-primary text-primary-foreground" : "bg-accent/30 text-muted-foreground"}`}>나라별</button>
+              </div>
+            )}
+
+            {importSportId && importCategory === "tournament" && (
+              <div className="border border-border rounded-lg p-3 text-center">
+                <p className="text-xs text-muted-foreground mb-2">월드컵·아시안컵·챔피언스리그·유로파리그·A매치 등 국가/대륙 단위 대회를 한 번에 불러옵니다.</p>
+                <Button size="sm" className="w-full" onClick={searchTournaments} disabled={searchingLeagues}>
+                  {searchingLeagues ? "대회 목록 검색 중..." : "대회 목록 검색"}
+                </Button>
+              </div>
+            )}
+
+            {importSportId && importCategory === "bigleague" && (
+              <div className="border border-border rounded-lg p-3 text-center">
+                <p className="text-xs text-muted-foreground mb-2">분데스리가·라리가·세리에A·프리미어리그·리그1·K리그 등 인기 리그가 있는 국가들을 한 번에 검색합니다. 검색 후 목록에서 원하는 리그만 체크하세요.</p>
+                <Button size="sm" className="w-full" onClick={searchBigLeagues} disabled={searchingLeagues}>
+                  {searchingLeagues ? "빅리그 검색 중..." : "빅리그 국가 검색"}
+                </Button>
+              </div>
+            )}
+
+            {importSportId && importCategory === "country" && (
               <div className="border border-border rounded-lg p-2">
                 <div className="flex items-center justify-between px-1 py-1.5 border-b border-border/50 mb-1">
-                  <p className="text-xs text-muted-foreground">② 국가 선택 (여러 개 가능) — {selectedCountries.size}개 선택됨</p>
+                  <p className="text-xs text-muted-foreground">국가 선택 (여러 개 가능) — {selectedCountries.size}개 선택됨</p>
                   <label className="flex items-center gap-1.5 text-xs cursor-pointer">
                     <Checkbox checked={allCountriesSelected} onCheckedChange={toggleAllCountries} />전체 선택
                   </label>
@@ -320,7 +378,7 @@ export default function AdminSports() {
             {foundLeagues.length > 0 && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <p className="text-xs text-muted-foreground">③ 등록할 리그를 선택하세요 (1부/2부/컵대회 등, 총 {foundLeagues.length}개 조회됨)</p>
+                  <p className="text-xs text-muted-foreground">② 등록할 리그를 선택하세요 (1부/2부/컵대회 등, 총 {foundLeagues.length}개 조회됨)</p>
                   <label className="flex items-center gap-1.5 text-xs cursor-pointer shrink-0">
                     <Checkbox checked={allLeaguesSelected} onCheckedChange={toggleAllLeagues} />전체 선택
                   </label>
