@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import bcrypt from "bcryptjs";
 import { InsertUser, users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory, pitcherStartHistory, playerAppearanceLog } from "../drizzle/schema";
 import { ENV } from './_core/env';
-import { fetchUpcomingFixtures, fetchFixtureById, fetchUpcomingBaseballGames, fetchStandings, fetchFixtureStatistics, fetchFixtureEvents, fetchFixturePlayerStats, fetchFullSeasonFixtures, ApiFootballFixture } from './_core/apiSports';
+import { fetchUpcomingFixtures, fetchFixtureById, fetchUpcomingBaseballGames, fetchStandings, fetchFixtureStatistics, fetchFixtureEvents, fetchFixturePlayerStats, fetchFullSeasonFixtures, fetchOdds, ApiFootballFixture } from './_core/apiSports';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -509,15 +509,17 @@ function mapApiStatus(short: string): "scheduled" | "live" | "finished" | "cance
 
 // 곧 시작했거나 진행 중일 가능성이 있는 경기들을 다시 조회해서 상태/스코어 갱신
 // (매치 시작 30분 전 ~ 시작 후 4시간까지가 대상 — 그 외는 API 낭비라 건드리지 않음)
-export async function refreshLiveMatchStatuses() {
+// 2026 수정: API 사용량 78% 소진 이슈로 전면 재점검
+// 예전엔 5분마다 "앞으로 30일치 예정경기 전부"를 확인해서 API를 과도하게 소모했음
+// → wideCheck=false(기본, 5분마다): 최근 24시간 이내 시작~2시간 이내 시작예정만 확인 (실제로 상태변화 가능성 있는 것만)
+// → wideCheck=true(하루 몇 번만): 30일 전체를 확인해서 혹시 놓친 경기를 뒤늦게라도 잡음
+export async function refreshLiveMatchStatuses(wideCheck: boolean = false) {
   const db = await getDb();
   if (!db) return { checked: 0, updated: 0 };
 
   const now = new Date();
-  // 2026 수정: 예전엔 "경기시작 후 4시간까지만" 확인해서, 그 안에 못 잡으면 영원히 "예정"으로 박제되는 버그가 있었음
-  // → 과거 창을 30일로 넓혀서, 방치된 경기도 계속 재확인 대상에 포함시킴 (아직 scheduled/live인 것만 대상이라 낭비 적음)
-  const windowStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-  const windowEnd = new Date(now.getTime() + 30 * 60 * 1000);
+  const windowStart = new Date(now.getTime() - (wideCheck ? 30 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000));
+  const windowEnd = new Date(now.getTime() + (wideCheck ? 30 * 60 * 1000 : 2 * 60 * 60 * 1000));
 
   const candidates = await db.select().from(matches).where(and(
     inArray(matches.status, ["scheduled", "live"]),
@@ -685,19 +687,12 @@ export async function syncFootballFixturesForLeague(leagueId: number, season: nu
   if (!league.externalLeagueId) throw new Error("이 리그에 API-Sports 리그ID(externalLeagueId)가 설정되어 있지 않습니다. 종목·리그 관리에서 먼저 입력하세요.");
 
   // 시즌 표기 관례가 리그마다 다름(유럽=8월시작연도, K리그·MLS=실제연도) → 올해→작년 순 시도
-  // + 2024를 마지막 안전망으로 추가 (API-Sports 무료 플랜은 2022~2024 시즌만 지원 — 유료 전환 전 파이프라인 검증용)
-  // 2024 검증 시에는 날짜범위도 2024년 내부(9월경, 대부분 리그 시즌 중)로 맞춰야 실제로 걸림
   let fixtures: ApiFootballFixture[] = [];
   let usedSeason = season;
   let lastError: Error | null = null;
-  const attempts: { s: number; ref: Date }[] = [
-    { s: season, ref: new Date() },
-    { s: season - 1, ref: new Date() },
-    { s: 2024, ref: new Date("2024-09-01") },
-  ];
-  for (const { s, ref } of attempts) {
+  for (const s of [season, season - 1]) {
     try {
-      fixtures = await fetchUpcomingFixtures(league.externalLeagueId, s, 30, ref);
+      fixtures = await fetchUpcomingFixtures(league.externalLeagueId, s, 30, new Date());
       usedSeason = s;
       if (fixtures.length > 0) break;
     } catch (err) {
@@ -712,6 +707,13 @@ export async function syncFootballFixturesForLeague(leagueId: number, season: nu
     const existing = await db.select().from(matches).where(eq(matches.externalId, externalId)).limit(1);
     if (existing.length > 0) { skipped++; continue; }
 
+    // 2026 수정: 배당률은 보통 경기 임박해야 발표되므로, 5일 이내 경기만 미리 가져옴 (먼 미래 경기까지 다 가져오면 대부분 빈 값이라 API 낭비)
+    let odds: Awaited<ReturnType<typeof fetchOdds>> = null;
+    const daysUntilMatch = (new Date(f.fixture.date).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+    if (daysUntilMatch <= 5) {
+      try { odds = await fetchOdds(externalId); } catch { /* 배당률 아직 미발표 등 — 조용히 넘어감, 상세페이지 방문시 재시도됨 */ }
+    }
+
     await db.insert(matches).values({
       leagueId: league.id,
       homeTeam: f.teams.home.name,
@@ -722,6 +724,7 @@ export async function syncFootballFixturesForLeague(leagueId: number, season: nu
       venue: f.fixture.venue?.name ?? null,
       externalId,
       apiData: f as unknown as Record<string, unknown>,
+      odds,
       status: "scheduled",
     });
     created++;

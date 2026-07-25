@@ -30,12 +30,19 @@ ensureBootstrapAdmin().finally(() => {
   });
 
   // 2026 신규: 5분마다 곧 시작/진행중인 경기 상태를 API-Sports에서 다시 확인해 자동 갱신
-  // (예정→진행중→종료 전환이 자동으로 반영되도록. API 요청 절약을 위해 대상 경기만 선별해서 조회함)
+  // (예정→진행중→종료 전환이 자동으로 반영되도록. API 사용량 절감을 위해 "최근24시간~2시간이내시작" 범위만 좁게 확인)
   setInterval(() => {
-    refreshLiveMatchStatuses()
+    refreshLiveMatchStatuses(false)
       .then((r) => { if (r.updated > 0) console.log(`[경기상태 자동갱신] 확인 ${r.checked}건 중 ${r.updated}건 갱신됨`); })
       .catch((e) => console.error("[경기상태 자동갱신 실패]", e));
   }, 5 * 60 * 1000);
+
+  // 2026 신규: 3시간마다 한 번, 30일 전체 범위로 넓게 확인해서 혹시 놓친(방치된) 경기를 뒤늦게라도 잡아줌
+  setInterval(() => {
+    refreshLiveMatchStatuses(true)
+      .then((r) => { if (r.updated > 0) console.log(`[경기상태 보완갱신(넓은범위)] 확인 ${r.checked}건 중 ${r.updated}건 갱신됨`); })
+      .catch((e) => console.error("[경기상태 보완갱신 실패]", e));
+  }, 3 * 60 * 60 * 1000);
 
   // 2026 신규: 관리자가 지정한 요일+시간에 맞춰 전체 리그 자동 동기화 (매분 확인, 같은 분에 중복 실행 방지)
   // 예) 요일=월,수,금 시간=00:00 으로 설정하면 그 요일 그 시각에만 실행됨. 수동 버튼은 이 스케줄과 별개로 항상 사용 가능.

@@ -174,7 +174,7 @@ export default function MatchDetail() {
 
   const ensureGenerated = trpc.analysis.ensureGenerated.useMutation({
     onSuccess: (r) => { if (!r.alreadyCached) refetchAnalyses(); },
-    onError: () => {}, // 사용자 화면에는 실패를 노출하지 않음(관리자 로그에서 확인)
+    onError: () => {}, // 사용자 화면에는 실패 상세를 노출하지 않음(관리자 로그에서 확인), 대신 아래서 "완료 여부"만 추적
   });
   const ensureDetails = trpc.analysis.ensureMatchDetails.useMutation({
     onSuccess: () => { utils.analysis.matchStats.invalidate({ matchId }); },
@@ -284,8 +284,18 @@ export default function MatchDetail() {
           </div>
           {!hasAnalyses ? (
             <div className="rounded-xl border border-border/30 p-8 text-center space-y-3">
-              <div className="w-12 h-12 mx-auto rounded-full bg-primary/10 flex items-center justify-center animate-pulse"><Zap className="w-6 h-6 text-primary/50" /></div>
-              <p className="text-sm text-foreground/50">분석가의 글을 불러오고 있습니다...</p>
+              {(ensureGenerated.isSuccess || ensureGenerated.isError) && !ensureGenerated.isPending ? (
+                <>
+                  <div className="w-12 h-12 mx-auto rounded-full bg-accent/30 flex items-center justify-center"><Zap className="w-6 h-6 text-foreground/30" /></div>
+                  <p className="text-sm text-foreground/50">지금은 분석글을 준비하지 못했습니다. 잠시 후 다시 시도해주세요.</p>
+                  <Button size="sm" variant="outline" onClick={() => ensureGenerated.mutate({ matchId })}>다시 시도</Button>
+                </>
+              ) : (
+                <>
+                  <div className="w-12 h-12 mx-auto rounded-full bg-primary/10 flex items-center justify-center animate-pulse"><Zap className="w-6 h-6 text-primary/50" /></div>
+                  <p className="text-sm text-foreground/50">분석가의 글을 불러오고 있습니다...</p>
+                </>
+              )}
             </div>
           ) : (
             <div className="space-y-3">
