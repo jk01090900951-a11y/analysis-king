@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -32,7 +32,8 @@ export default function AdminMatches() {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [progress, setProgress] = useState<{ label: string; done: number; total: number } | null>(null);
+  const [progress, setProgress] = useState<{ label: string; done: number; total: number; currentName?: string } | null>(null);
+  const [lastFailed, setLastFailed] = useState<{ label: string; ids: number[]; kind: "picks" | "analysis" } | null>(null);
 
   const genPicksMutation = trpc.bot.generatePicks.useMutation();
   const genAnalysisMutation = trpc.analysis.generate.useMutation();
@@ -78,23 +79,57 @@ export default function AdminMatches() {
   const changeFilter = (fn: () => void) => { fn(); setSelected(new Set()); setPage(0); };
 
   // 대량 처리는 병렬로 쏘지 않고 하나씩 순서대로 처리합니다 (API 요청 폭주 방지 + 진행률 표시 목적)
-  const runBulk = async (label: string, ids: number[], fn: (id: number) => Promise<unknown>) => {
-    setProgress({ label, done: 0, total: ids.length });
-    let success = 0, failed = 0;
+  const findMatchName = (id: number) => {
+    const m = matches.find((mm: any) => mm.id === id);
+    return m ? `${m.homeTeam} vs ${m.awayTeam}` : `#${id}`;
+  };
+
+  const stopRequestedRef = useRef(false);
+
+  // 진행 중에 실수로 창을 닫거나 새로고침하면 경고를 띄워서, "중지" 버튼을 먼저 누르도록 유도
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (progress) { e.preventDefault(); e.returnValue = ""; }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [progress]);
+
+  const runBulk = async (label: string, ids: number[], fn: (id: number) => Promise<unknown>, kind: "picks" | "analysis") => {
+    stopRequestedRef.current = false;
+    setProgress({ label, done: 0, total: ids.length, currentName: findMatchName(ids[0]!) });
+    let success = 0;
+    const failedIds: number[] = [];
     let lastError = "";
+    let stoppedEarly = false;
     for (let i = 0; i < ids.length; i++) {
+      if (stopRequestedRef.current) {
+        stoppedEarly = true;
+        // 아직 처리 안 한 나머지도 "재시도 대상"에 포함시켜서, 나중에 이어서 할 수 있게 함
+        failedIds.push(...ids.slice(i));
+        break;
+      }
+      setProgress({ label, done: i, total: ids.length, currentName: findMatchName(ids[i]!) });
       try {
         await fn(ids[i]!);
         success++;
       } catch (e: any) {
-        failed++;
+        failedIds.push(ids[i]!);
         lastError = e?.message ?? String(e);
       }
-      setProgress({ label, done: i + 1, total: ids.length });
+      setProgress({ label, done: i + 1, total: ids.length, currentName: i + 1 < ids.length ? findMatchName(ids[i + 1]!) : undefined });
     }
     setProgress(null);
     utils.match.list.invalidate();
-    if (failed > 0 && success === 0) {
+    const failed = failedIds.length;
+    if (failed > 0) {
+      setLastFailed({ label, ids: failedIds, kind });
+    } else {
+      setLastFailed(null);
+    }
+    if (stoppedEarly) {
+      toast(`${label} 중지됨 — 성공 ${success}건, 남은 ${failed}건은 "재시도" 버튼으로 이어서 할 수 있습니다.`, { duration: 8000 });
+    } else if (failed > 0 && success === 0) {
       toast.error(`${label} 실패 (${failed}건) — ${lastError}`, { duration: 10000 });
     } else if (failed > 0) {
       toast.success(`${label} 완료 — 성공 ${success}건, 실패 ${failed}건 (마지막 오류: ${lastError})`, { duration: 10000 });
@@ -103,8 +138,15 @@ export default function AdminMatches() {
     }
   };
 
-  const bulkGenPicks = () => runBulk("픽 일괄 생성", Array.from(selected), (id) => genPicksMutation.mutateAsync({ matchId: id }));
-  const bulkGenAnalysis = () => runBulk("분석글 일괄 생성", Array.from(selected), (id) => genAnalysisMutation.mutateAsync({ matchId: id }));
+  const bulkGenPicks = () => runBulk("픽 일괄 생성", Array.from(selected), (id) => genPicksMutation.mutateAsync({ matchId: id }), "picks");
+  const bulkGenAnalysis = () => runBulk("분석글 일괄 생성", Array.from(selected), (id) => genAnalysisMutation.mutateAsync({ matchId: id }), "analysis");
+  const retryFailed = () => {
+    if (!lastFailed) return;
+    const fn = lastFailed.kind === "picks"
+      ? (id: number) => genPicksMutation.mutateAsync({ matchId: id })
+      : (id: number) => genAnalysisMutation.mutateAsync({ matchId: id });
+    runBulk(`${lastFailed.label} (재시도)`, lastFailed.ids, fn, lastFailed.kind);
+  };
 
   return (
     <div>
@@ -172,12 +214,31 @@ export default function AdminMatches() {
       {/* 진행률 표시 */}
       {progress && (
         <div className="mb-4 p-3 rounded-xl bg-primary/10 border border-primary/30">
-          <div className="flex justify-between text-sm mb-1.5">
+          <div className="flex justify-between items-center text-sm mb-1.5">
             <span>{progress.label} 진행 중... ({progress.done}/{progress.total})</span>
-            <span>{Math.round((progress.done / progress.total) * 100)}%</span>
+            <div className="flex items-center gap-2">
+              <span>{Math.round((progress.done / progress.total) * 100)}%</span>
+              <Button size="sm" variant="outline" className="h-6 text-xs border-destructive/40 text-destructive" onClick={() => { stopRequestedRef.current = true; }}>
+                중지
+              </Button>
+            </div>
           </div>
           <Progress value={(progress.done / progress.total) * 100} />
-          <p className="text-xs text-muted-foreground mt-1.5">창을 닫지 말고 잠시 기다려주세요. 경기 수가 많으면 시간이 걸릴 수 있습니다.</p>
+          {progress.currentName && (
+            <p className="text-xs text-primary mt-1.5 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />지금 처리 중: {progress.currentName}</p>
+          )}
+          <p className="text-xs text-muted-foreground mt-1">창을 닫으면 여기서부터 이어지지 않고 완전히 중단됩니다. 나가시기 전엔 "중지"를 눌러 안전하게 멈춰주세요.</p>
+        </div>
+      )}
+
+      {!progress && lastFailed && lastFailed.ids.length > 0 && (
+        <div className="mb-4 p-3 rounded-xl bg-destructive/10 border border-destructive/30 flex items-center justify-between gap-3">
+          <p className="text-xs text-destructive">
+            지난 {lastFailed.label}에서 {lastFailed.ids.length}건 실패했습니다 (예: 크레딧 소진). 충전 등 조치 후 실패한 것만 다시 시도할 수 있습니다.
+          </p>
+          <Button size="sm" variant="outline" className="border-destructive/40 text-destructive shrink-0" onClick={retryFailed}>
+            실패한 {lastFailed.ids.length}건 재시도
+          </Button>
         </div>
       )}
 

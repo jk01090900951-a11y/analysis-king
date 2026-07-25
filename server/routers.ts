@@ -377,6 +377,72 @@ async function settleMatchLogic(matchId: number, homeScore: number, awayScore: n
       return { success: true, result, ouResult };
 }
 
+// 픽 생성 핵심 로직 — bot.generatePicks(관리자수동)/백그라운드 잡 공용
+async function generatePicksForMatch(matchId: number) {
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const match = await getMatchById(matchId);
+      if (!match) throw new TRPCError({ code: "NOT_FOUND" });
+      const bots = await getAllBots();
+      if (bots.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "등록된 분석가가 없습니다." });
+
+      const matchInfo = `${match.homeTeam} vs ${match.awayTeam} (${match.leagueName}, ${new Date(match.matchDate).toLocaleDateString('ko-KR')})`;
+      const apiData = match.apiData as any ?? {};
+
+      for (const bot of bots) {
+        // 이미 픽이 있으면 스킵
+        const existing = await db.select().from(botPicks).where(and(eq(botPicks.botId, bot.id), eq(botPicks.matchId, matchId))).limit(1);
+        if (existing.length > 0) continue;
+
+        const weights = bot.weights as any ?? {};
+        const strategyDesc: Record<string, string> = {
+          head_to_head: "상대전적 데이터를 최우선으로 분석",
+          recent_form: "최근 5경기 성적을 최우선으로 분석",
+          data_driven: "모든 통계 데이터를 종합적으로 분석",
+          fatigue_based: "선수 피로도와 일정 밀도를 최우선으로 분석",
+          balanced: "상대전적, 최근성적, 홈/원정, 피로도를 균형있게 분석",
+        };
+
+        const prompt = `당신은 스포츠 AI 예측봇입니다. 전략: ${strategyDesc[bot.strategy] ?? bot.strategy}
+경기: ${matchInfo}
+가중치: ${JSON.stringify(weights)}
+데이터: ${JSON.stringify(apiData)}
+
+위 경기에 대해 승무패(home/draw/away)와 언더오버(over/under, 기준: ${match.overUnderLine}골)를 예측하고, 각각의 신뢰도(0-100)와 간단한 근거를 JSON으로 반환하세요.
+형식: {"wdlPick":"home","wdlConfidence":72,"ouPick":"over","ouConfidence":65,"reasoning":"근거 2-3문장"}`;
+
+        let wdlPick: "home" | "draw" | "away" = "home";
+        let wdlConfidence = 60;
+        let ouPick: "over" | "under" = "over";
+        let ouConfidence = 55;
+        let reasoning = `${bot.name}의 분석: ${match.homeTeam} vs ${match.awayTeam}`;
+
+        try {
+          const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "pick", strict: true, schema: { type: "object", properties: { wdlPick: { type: "string" }, wdlConfidence: { type: "number" }, ouPick: { type: "string" }, ouConfidence: { type: "number" }, reasoning: { type: "string" } }, required: ["wdlPick", "wdlConfidence", "ouPick", "ouConfidence", "reasoning"], additionalProperties: false } } } });
+          const content = response.choices?.[0]?.message?.content as string | undefined;
+          if (content) {
+            const parsed = JSON.parse(content);
+            if (["home", "draw", "away"].includes(parsed.wdlPick)) wdlPick = parsed.wdlPick;
+            if (typeof parsed.wdlConfidence === "number") wdlConfidence = Math.min(99, Math.max(1, parsed.wdlConfidence));
+            if (["over", "under"].includes(parsed.ouPick)) ouPick = parsed.ouPick;
+            if (typeof parsed.ouConfidence === "number") ouConfidence = Math.min(99, Math.max(1, parsed.ouConfidence));
+            if (parsed.reasoning) reasoning = parsed.reasoning;
+          }
+        } catch (e) {
+          // LLM 실패 시 전략 기반 기본값 사용
+          console.warn(`Bot ${bot.name} LLM failed, using defaults`);
+        }
+
+        await db.insert(botPicks).values({
+          botId: bot.id, matchId: matchId,
+          pickType: "win_draw_lose", wdlPick, wdlConfidence: String(wdlConfidence),
+          ouPick, ouLine: match.overUnderLine ?? "2.5", ouConfidence: String(ouConfidence),
+          reasoning,
+        });
+      }
+
+      return { success: true };
+}
+
 export const appRouter = router({
   system: systemRouter,
 
@@ -568,70 +634,7 @@ export const appRouter = router({
     // AI 봇 픽 생성 (LLM 활용)
     generatePicks: adminProcedure
       .input(z.object({ matchId: z.number() }))
-      .mutation(async ({ input }) => {
-        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        const match = await getMatchById(input.matchId);
-        if (!match) throw new TRPCError({ code: "NOT_FOUND" });
-        const bots = await getAllBots();
-        if (bots.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "등록된 분석가가 없습니다." });
-
-        const matchInfo = `${match.homeTeam} vs ${match.awayTeam} (${match.leagueName}, ${new Date(match.matchDate).toLocaleDateString('ko-KR')})`;
-        const apiData = match.apiData as any ?? {};
-
-        for (const bot of bots) {
-          // 이미 픽이 있으면 스킵
-          const existing = await db.select().from(botPicks).where(and(eq(botPicks.botId, bot.id), eq(botPicks.matchId, input.matchId))).limit(1);
-          if (existing.length > 0) continue;
-
-          const weights = bot.weights as any ?? {};
-          const strategyDesc: Record<string, string> = {
-            head_to_head: "상대전적 데이터를 최우선으로 분석",
-            recent_form: "최근 5경기 성적을 최우선으로 분석",
-            data_driven: "모든 통계 데이터를 종합적으로 분석",
-            fatigue_based: "선수 피로도와 일정 밀도를 최우선으로 분석",
-            balanced: "상대전적, 최근성적, 홈/원정, 피로도를 균형있게 분석",
-          };
-
-          const prompt = `당신은 스포츠 AI 예측봇입니다. 전략: ${strategyDesc[bot.strategy] ?? bot.strategy}
-경기: ${matchInfo}
-가중치: ${JSON.stringify(weights)}
-데이터: ${JSON.stringify(apiData)}
-
-위 경기에 대해 승무패(home/draw/away)와 언더오버(over/under, 기준: ${match.overUnderLine}골)를 예측하고, 각각의 신뢰도(0-100)와 간단한 근거를 JSON으로 반환하세요.
-형식: {"wdlPick":"home","wdlConfidence":72,"ouPick":"over","ouConfidence":65,"reasoning":"근거 2-3문장"}`;
-
-          let wdlPick: "home" | "draw" | "away" = "home";
-          let wdlConfidence = 60;
-          let ouPick: "over" | "under" = "over";
-          let ouConfidence = 55;
-          let reasoning = `${bot.name}의 분석: ${match.homeTeam} vs ${match.awayTeam}`;
-
-          try {
-            const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "pick", strict: true, schema: { type: "object", properties: { wdlPick: { type: "string" }, wdlConfidence: { type: "number" }, ouPick: { type: "string" }, ouConfidence: { type: "number" }, reasoning: { type: "string" } }, required: ["wdlPick", "wdlConfidence", "ouPick", "ouConfidence", "reasoning"], additionalProperties: false } } } });
-            const content = response.choices?.[0]?.message?.content as string | undefined;
-            if (content) {
-              const parsed = JSON.parse(content);
-              if (["home", "draw", "away"].includes(parsed.wdlPick)) wdlPick = parsed.wdlPick;
-              if (typeof parsed.wdlConfidence === "number") wdlConfidence = Math.min(99, Math.max(1, parsed.wdlConfidence));
-              if (["over", "under"].includes(parsed.ouPick)) ouPick = parsed.ouPick;
-              if (typeof parsed.ouConfidence === "number") ouConfidence = Math.min(99, Math.max(1, parsed.ouConfidence));
-              if (parsed.reasoning) reasoning = parsed.reasoning;
-            }
-          } catch (e) {
-            // LLM 실패 시 전략 기반 기본값 사용
-            console.warn(`Bot ${bot.name} LLM failed, using defaults`);
-          }
-
-          await db.insert(botPicks).values({
-            botId: bot.id, matchId: input.matchId,
-            pickType: "win_draw_lose", wdlPick, wdlConfidence: String(wdlConfidence),
-            ouPick, ouLine: match.overUnderLine ?? "2.5", ouConfidence: String(ouConfidence),
-            reasoning,
-          });
-        }
-
-        return { success: true };
-      }),
+      .mutation(({ input }) => generatePicksForMatch(input.matchId)),
 
     generatePicksForBot: adminProcedure
       .input(z.object({ botId: z.number() }))
