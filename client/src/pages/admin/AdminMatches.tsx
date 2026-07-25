@@ -37,6 +37,7 @@ export default function AdminMatches() {
 
   const genPicksMutation = trpc.bot.generatePicks.useMutation();
   const genAnalysisMutation = trpc.analysis.generate.useMutation();
+  const deleteAnalysisMutation = trpc.admin.deleteMatchAnalysis.useMutation();
   const cleanupMutation = trpc.admin.cleanupOldMatches.useMutation({
     onSuccess: (r) => { toast.success(`오래된 데이터 ${r.deleted}건 정리 완료`); utils.match.list.invalidate(); },
     onError: (e) => toast.error(e.message),
@@ -257,7 +258,28 @@ export default function AdminMatches() {
                 <div className="text-xs text-muted-foreground">{m.leagueName} · {new Date(m.matchDate).toLocaleString("ko-KR")}</div>
               </div>
               {m.hasPicks && <Badge variant="outline" className="text-xs"><CheckCircle2 className="w-3 h-3 mr-1" />픽완료</Badge>}
-              {m.hasAnalysis && <Badge className="text-xs bg-primary/20 text-primary border-primary/30"><CheckCircle2 className="w-3 h-3 mr-1" />분석글완료</Badge>}
+              {m.hasAnalysis && (
+                <Badge className={`text-xs ${m.analysisCount >= m.expectedAnalysisCount ? "bg-primary/20 text-primary border-primary/30" : "bg-amber-500/20 text-amber-400 border-amber-500/30"}`}>
+                  <CheckCircle2 className="w-3 h-3 mr-1" />
+                  {m.analysisCount >= m.expectedAnalysisCount ? "분석글완료" : `분석글 ${m.analysisCount}/${m.expectedAnalysisCount}명`}
+                </Badge>
+              )}
+              {m.hasAnalysis && (
+                <Button
+                  size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive"
+                  title="이 경기 분석글 삭제 후 재생성"
+                  onClick={() => {
+                    if (confirm(`"${m.homeTeam} vs ${m.awayTeam}"의 분석글·픽을 삭제합니다. 경기 자체와 상세데이터는 유지됩니다. 계속할까요?`)) {
+                      deleteAnalysisMutation.mutate({ matchId: m.id }, {
+                        onSuccess: (r: any) => { toast.success(`분석글 ${r.deletedAnalyses}건, 픽 ${r.deletedPicks}건 삭제 완료`); utils.match.list.invalidate(); },
+                        onError: (e) => toast.error(e.message),
+                      });
+                    }
+                  }}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </Button>
+              )}
               <Button size="sm" variant="ghost" onClick={() => genPicksMutation.mutate({ matchId: m.id }, { onSuccess: () => { toast.success("픽 생성 완료"); utils.match.list.invalidate(); } })}>
                 <Zap className="w-3.5 h-3.5" />
               </Button>

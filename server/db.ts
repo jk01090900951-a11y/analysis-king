@@ -123,6 +123,7 @@ export async function getMatches(filters?: { leagueId?: number; sportId?: number
     createdAt: matches.createdAt,
     leagueName: leagues.name,
     leagueCountry: leagues.country,
+    leagueTier: leagues.tier,
     sportId: leagues.sportId,
     sportName: sports.name,
     sportIcon: sports.icon,
@@ -179,13 +180,20 @@ export async function getMatches(filters?: { leagueId?: number; sportId?: number
 
   if (rows.length === 0) return { rows, total };
   const ids = rows.map((r: any) => r.id);
-  const [analysisRows, pickRows] = await Promise.all([
-    db.selectDistinct({ matchId: matchAnalysis.matchId }).from(matchAnalysis).where(inArray(matchAnalysis.matchId, ids)),
+  const [analysisCountRows, pickRows] = await Promise.all([
+    db.select({ matchId: matchAnalysis.matchId, count: sql<number>`count(*)` }).from(matchAnalysis).where(inArray(matchAnalysis.matchId, ids)).groupBy(matchAnalysis.matchId),
     db.selectDistinct({ matchId: botPicks.matchId }).from(botPicks).where(inArray(botPicks.matchId, ids)),
   ]);
-  const analyzedSet = new Set(analysisRows.map((r: any) => r.matchId));
+  const analysisCountMap = new Map(analysisCountRows.map((r: any) => [r.matchId, Number(r.count)]));
   const pickedSet = new Set(pickRows.map((r: any) => r.matchId));
-  return { rows: rows.map((r: any) => ({ ...r, hasAnalysis: analyzedSet.has(r.id), hasPicks: pickedSet.has(r.id) })), total };
+  return {
+    rows: rows.map((r: any) => {
+      const expectedCount = r.leagueTier === "major" ? 10 : 4;
+      const actualCount = analysisCountMap.get(r.id) ?? 0;
+      return { ...r, hasAnalysis: actualCount > 0, analysisCount: actualCount, expectedAnalysisCount: expectedCount, hasPicks: pickedSet.has(r.id) };
+    }),
+    total,
+  };
 }
 
 // 2026 신규: 페이지네이션과 무관하게 필터에 맞는 전체 matchId만 가볍게 조회 (여러 페이지 걸친 일괄선택용)

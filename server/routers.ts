@@ -1026,6 +1026,17 @@ export const appRouter = router({
       await db.delete(botPicks);
       return { deletedAnalyses: Number(analysisCount?.count ?? 0), deletedPicks: Number(pickCount?.count ?? 0) };
     }),
+    // 2026 신규: 경기 하나만 분석글·픽 삭제 (경기 자체와 상세데이터는 유지) — 삭제 후 다시 "분석글 생성" 누르면 깨끗하게 재생성됨
+    deleteMatchAnalysis: adminProcedure
+      .input(z.object({ matchId: z.number() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const [analysisCount] = await db.select({ count: sql<number>`count(*)` }).from(matchAnalysis).where(eq(matchAnalysis.matchId, input.matchId));
+        const [pickCount] = await db.select({ count: sql<number>`count(*)` }).from(botPicks).where(eq(botPicks.matchId, input.matchId));
+        await db.delete(matchAnalysis).where(eq(matchAnalysis.matchId, input.matchId));
+        await db.delete(botPicks).where(eq(botPicks.matchId, input.matchId));
+        return { deletedAnalyses: Number(analysisCount?.count ?? 0), deletedPicks: Number(pickCount?.count ?? 0) };
+      }),
     settleMatch: adminProcedure
       .input(z.object({ matchId: z.number() }))
       .mutation(async ({ input }) => {
