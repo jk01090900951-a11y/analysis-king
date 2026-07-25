@@ -142,7 +142,7 @@ export default function AdminSports() {
   };
 
   // 2026 신규: [빅리그] — 인기 축구 리그가 있는 나라들을 미리 정해두고 한 번에 검색 (실제 빅리그 이름은 목록에서 직접 체크)
-  const BIG_LEAGUE_COUNTRIES = ["Germany", "Spain", "Italy", "England", "France", "South Korea"];
+  const BIG_LEAGUE_COUNTRIES = ["Germany", "Spain", "Italy", "England", "France", "Korea-Republic"];
   const searchBigLeagues = async () => {
     if (!importSport) return;
     setSearchingLeagues(true);
@@ -313,7 +313,7 @@ export default function AdminSports() {
 
       {/* 나라별 리그 대량 가져오기 */}
       <Dialog open={importDialog} onOpenChange={(o) => { setImportDialog(o); if (!o) { setSelectedCountries(new Set()); setFoundLeagues([]); setSelectedLeagues({}); } }}>
-        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto overflow-x-hidden">
           <DialogHeader><DialogTitle>리그 가져오기 (대회 · 빅리그 · 나라별)</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <Select value={importSportId ? String(importSportId) : undefined} onValueChange={(v) => { setImportSportId(Number(v)); setSelectedCountries(new Set()); setFoundLeagues([]); setSelectedLeagues({}); }}>
@@ -383,17 +383,28 @@ export default function AdminSports() {
                     <Checkbox checked={allLeaguesSelected} onCheckedChange={toggleAllLeagues} />전체 선택
                   </label>
                 </div>
+                {Object.keys(selectedLeagues).length > 0 && (
+                  <div className="flex items-center gap-2 text-xs bg-accent/10 rounded-lg p-2">
+                    <span className="text-muted-foreground shrink-0">선택한 {Object.keys(selectedLeagues).length}개를 일괄로</span>
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setSelectedLeagues((prev) => Object.fromEntries(Object.keys(prev).map((k) => [k, "major"])))}>
+                      전부 분석가 10명
+                    </Button>
+                    <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setSelectedLeagues((prev) => Object.fromEntries(Object.keys(prev).map((k) => [k, "minor"])))}>
+                      전부 분석가 4명
+                    </Button>
+                  </div>
+                )}
                 <div className="max-h-72 overflow-y-auto space-y-1">
                   {foundLeagues.map((l: any) => (
-                    <div key={l.externalLeagueId} className="flex items-center gap-3 p-2 rounded-lg bg-accent/20">
-                      <Checkbox checked={!!selectedLeagues[l.externalLeagueId]} onCheckedChange={(c) => toggleLeague(l.externalLeagueId, !!c)} />
-                      <span className="flex-1 text-sm truncate">{l.name} <span className="text-xs text-muted-foreground">({l.country}{l.type ? ` · ${l.type}` : ""})</span></span>
+                    <div key={l.externalLeagueId} className="flex items-center gap-2 p-2 rounded-lg bg-accent/20 min-w-0">
+                      <Checkbox checked={!!selectedLeagues[l.externalLeagueId]} onCheckedChange={(c) => toggleLeague(l.externalLeagueId, !!c)} className="shrink-0" />
+                      <span className="flex-1 min-w-0 text-sm truncate">{l.name} <span className="text-xs text-muted-foreground">({l.country}{l.type ? ` · ${l.type}` : ""})</span></span>
                       {selectedLeagues[l.externalLeagueId] && (
                         <Select value={selectedLeagues[l.externalLeagueId]} onValueChange={(v) => setSelectedLeagues((p) => ({ ...p, [l.externalLeagueId]: v as "major" | "minor" }))}>
-                          <SelectTrigger className="w-28 h-7 text-xs shrink-0"><SelectValue /></SelectTrigger>
+                          <SelectTrigger className="w-24 h-7 text-xs shrink-0"><SelectValue /></SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="major">분석가 10명</SelectItem>
-                            <SelectItem value="minor">분석가 4명</SelectItem>
+                            <SelectItem value="major">10명</SelectItem>
+                            <SelectItem value="minor">4명</SelectItem>
                           </SelectContent>
                         </Select>
                       )}
