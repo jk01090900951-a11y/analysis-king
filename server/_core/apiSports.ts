@@ -164,6 +164,36 @@ export async function fetchBaseballGameById(gameId: string): Promise<ApiBaseball
   return data.response?.[0] ?? null;
 }
 
+// 2026 신규: 야구 순위표 (실제 확인됨 — 정상 작동, 정확한 리그ID 필요)
+export interface BaseballStandingRow {
+  rank: number; team: string; teamLogo: string | null;
+  points: number | null; played: number; win: number; lose: number; winRate: number | null; form: string | null;
+}
+export async function fetchBaseballStandings(leagueExternalId: string, season: number): Promise<BaseballStandingRow[]> {
+  const url = `${BASEBALL_BASE}/standings?league=${leagueExternalId}&season=${season}`;
+  const data = await apiSportsGet<{ response: any[] }>(url);
+  return (data.response ?? []).map((r: any) => ({
+    rank: r.position ?? 0, team: r.team?.name ?? "", teamLogo: r.team?.logo ?? null,
+    points: r.points ?? null, played: r.games?.played ?? 0, win: r.games?.win?.total ?? 0, lose: r.games?.lose?.total ?? 0,
+    winRate: r.games?.win?.percentage != null ? Number(r.games.win.percentage) * 100 : null, form: r.form ?? null,
+  }));
+}
+
+// 2026 신규: 야구 상대전적 (실제 확인됨 — 정상 작동, 2012년까지 과거기록 있음)
+export interface BaseballH2hGame { date: string; homeTeam: string; awayTeam: string; homeScore: number | null; awayScore: number | null; league: string; }
+export async function fetchBaseballHeadToHead(team1Id: number, team2Id: number, last: number = 10): Promise<BaseballH2hGame[]> {
+  const url = `${BASEBALL_BASE}/games/h2h?h2h=${team1Id}-${team2Id}`;
+  const data = await apiSportsGet<{ response: any[] }>(url);
+  return (data.response ?? [])
+    .filter((g: any) => g.status?.short === "FT")
+    .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime())
+    .slice(0, last)
+    .map((g: any) => ({
+      date: g.date, homeTeam: g.teams?.home?.name ?? "", awayTeam: g.teams?.away?.name ?? "",
+      homeScore: g.scores?.home?.total ?? null, awayScore: g.scores?.away?.total ?? null, league: g.league?.name ?? "",
+    }));
+}
+
 
 
 // 배당률 (베팅 유도 목적이 아니라 "시장이 어느 쪽을 우세하게 보는지" 참고 정보로만 사용)

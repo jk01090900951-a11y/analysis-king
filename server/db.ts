@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import bcrypt from "bcryptjs";
 import { InsertUser, users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory, pitcherStartHistory, playerAppearanceLog } from "../drizzle/schema";
 import { ENV } from './_core/env';
-import { fetchUpcomingFixtures, fetchFixtureById, fetchUpcomingBaseballGames, fetchStandings, fetchFixtureStatistics, fetchFixtureEvents, fetchFixturePlayerStats, fetchFullSeasonFixtures, fetchOdds, ApiFootballFixture } from './_core/apiSports';
+import { fetchUpcomingFixtures, fetchFixtureById, fetchUpcomingBaseballGames, fetchStandings, fetchBaseballStandings, fetchFixtureStatistics, fetchFixtureEvents, fetchFixturePlayerStats, fetchFullSeasonFixtures, fetchOdds, ApiFootballFixture } from './_core/apiSports';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -666,8 +666,8 @@ export async function getStandings(leagueId: number, season: number) {
   if (!league) return null;
   if (!league.externalLeagueId) return { standings: null, error: "이 리그에 API-Sports 리그ID가 없어 순위표를 가져올 수 없습니다." };
   // 2026 수정: 순위표 조회가 종목 구분 없이 무조건 축구 API를 호출하던 버그 — 야구 리그ID를 축구쪽에 잘못 조회해서
-  // 엉뚱한(우연히 ID가 겹치는) 축구 대회 데이터가 나오는 심각한 문제였음. 축구만 지원하도록 명확히 제한.
-  if (league.sportName !== "축구") return { standings: null, error: "순위표는 현재 축구만 지원합니다 (야구 등 다른 종목은 준비 중입니다)." };
+  // 엉뚱한(우연히 ID가 겹치는) 축구 대회 데이터가 나오는 심각한 문제였음. 축구/야구 각자 맞는 API로 분기.
+  if (league.sportName !== "축구" && league.sportName !== "야구") return { standings: null, error: "순위표는 현재 축구·야구만 지원합니다." };
 
   const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
   if (league.standingsCache && league.standingsUpdatedAt && league.standingsUpdatedAt > sixHoursAgo) {
@@ -675,7 +675,9 @@ export async function getStandings(leagueId: number, season: number) {
   }
 
   try {
-    const fresh = await fetchStandings(league.externalLeagueId, season);
+    const fresh = league.sportName === "야구"
+      ? await fetchBaseballStandings(league.externalLeagueId, season)
+      : await fetchStandings(league.externalLeagueId, season);
     await db.update(leagues).set({ standingsCache: fresh, standingsUpdatedAt: new Date() }).where(eq(leagues.id, leagueId));
     return { standings: fresh, updatedAt: new Date() };
   } catch (e) {

@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { and, eq, desc, gte, lte, sql, isNull, inArray } from "drizzle-orm";
 import { getDb, verifyLogin, getAllUsers, createAdmin, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getMatchIdsByFilter, getAllBots, getBotById, getBotPicksForMatch, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow, syncFootballFixturesForLeague, syncBaseballGamesForLeague, bulkImportLeagues, refreshLiveMatchStatuses, deleteMatchesBefore, getTeamHomeAwayRecord, splitH2hByVenue, getTeamRecentGamesList, getStandings, saveFetchedHistoricalFixture, backfillLeagueSeasons, autoSyncAllLeagues } from "./db";
-import { testApiSportsConnection, fetchCountries, searchLeaguesByCountry, SUPPORTED_SPORTS, fetchHeadToHead, fetchInjuries, fetchLineups, fetchOdds, fetchTeamStatistics, fetchTeamCoach, fetchCoachTrophies, fetchTeamTransfers, fetchTeamRecentFixtures, fetchFixtureEvents, fetchFixtureStatistics, fetchFixturePlayerStats } from "./_core/apiSports";
+import { testApiSportsConnection, fetchCountries, searchLeaguesByCountry, SUPPORTED_SPORTS, fetchHeadToHead, fetchBaseballHeadToHead, fetchInjuries, fetchLineups, fetchOdds, fetchTeamStatistics, fetchTeamCoach, fetchCoachTrophies, fetchTeamTransfers, fetchTeamRecentFixtures, fetchFixtureEvents, fetchFixtureStatistics, fetchFixturePlayerStats } from "./_core/apiSports";
 import { users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory } from "../drizzle/schema";
 import { storagePut } from "./storage";
 import { COOKIE_NAME } from "@shared/const";
@@ -66,6 +66,25 @@ export async function ensureMatchDetailData(matchId: number) {
           await db.insert(headToHead).values({
             matchId: matchId, homeTeam: match.homeTeam, awayTeam: match.awayTeam,
             records: realH2h, totalGames: realH2h.length, homeWins, draws, awayWins, avgTotalGoals: avgGoals.toFixed(2),
+          });
+        }
+      } else if (homeTeamId && awayTeamId && match.sportName?.includes("야구")) {
+        // 2026 신규: 야구 상대전적 (실제 API 테스트로 확인됨 — 정상 작동)
+        const rawH2h = await fetchBaseballHeadToHead(homeTeamId, awayTeamId, 50);
+        if (rawH2h.length > 0) {
+          const withResult = rawH2h.map((g) => ({
+            ...g,
+            result: g.homeScore == null || g.awayScore == null ? null : g.homeScore > g.awayScore ? "home" : g.homeScore < g.awayScore ? "away" : "draw",
+          }));
+          const homeWins = withResult.filter((r) => r.result === "home" && r.homeTeam === match.homeTeam).length
+            + withResult.filter((r) => r.result === "away" && r.awayTeam === match.homeTeam).length;
+          const awayWins = withResult.filter((r) => r.result === "away" && r.awayTeam === match.awayTeam).length
+            + withResult.filter((r) => r.result === "home" && r.homeTeam === match.awayTeam).length;
+          const draws = withResult.filter((r) => r.result === "draw").length;
+          const avgGoals = withResult.reduce((s, r) => s + (r.homeScore ?? 0) + (r.awayScore ?? 0), 0) / withResult.length;
+          await db.insert(headToHead).values({
+            matchId: matchId, homeTeam: match.homeTeam, awayTeam: match.awayTeam,
+            records: withResult, totalGames: withResult.length, homeWins, draws, awayWins, avgTotalGoals: avgGoals.toFixed(2),
           });
         }
       }
