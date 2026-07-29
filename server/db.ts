@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import bcrypt from "bcryptjs";
 import { InsertUser, users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory, pitcherStartHistory, playerAppearanceLog } from "../drizzle/schema";
 import { ENV } from './_core/env';
-import { fetchUpcomingFixtures, fetchFixtureById, fetchUpcomingBaseballGames, fetchStandings, fetchBaseballStandings, fetchFixtureStatistics, fetchFixtureEvents, fetchFixturePlayerStats, fetchFullSeasonFixtures, fetchOdds, ApiFootballFixture } from './_core/apiSports';
+import { fetchUpcomingFixtures, fetchFixtureById, fetchBaseballGameById, fetchUpcomingBaseballGames, fetchStandings, fetchBaseballStandings, fetchFixtureStatistics, fetchFixtureEvents, fetchFixturePlayerStats, fetchFullSeasonFixtures, fetchOdds, ApiFootballFixture } from './_core/apiSports';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -507,6 +507,15 @@ function mapApiStatus(short: string): "scheduled" | "live" | "finished" | "cance
   return "scheduled";
 }
 
+// 2026 신규: 야구 전용 상태매핑 — 축구 함수를 야구에도 잘못 재사용하던 버그(경기 시작 전인데 "종료"로 잘못 표시됨)를 수정하며 분리
+function mapBaseballStatus(short: string): "scheduled" | "live" | "finished" | "cancelled" {
+  if (["NS", "TBD"].includes(short)) return "scheduled";
+  if (["IN1", "IN2", "IN3", "IN4", "IN5", "IN6", "IN7", "IN8", "IN9", "LIVE", "HT", "BREAK"].includes(short)) return "live";
+  if (["FT", "AOT", "AET"].includes(short)) return "finished";
+  if (["POST", "CANC", "SUSP", "ABD"].includes(short)) return "cancelled";
+  return "scheduled";
+}
+
 // 곧 시작했거나 진행 중일 가능성이 있는 경기들을 다시 조회해서 상태/스코어 갱신
 // (매치 시작 30분 전 ~ 시작 후 4시간까지가 대상 — 그 외는 API 낭비라 건드리지 않음)
 // 2026 수정: API 사용량 78% 소진 이슈로 전면 재점검
@@ -525,23 +534,48 @@ export async function refreshLiveMatchStatuses(wideCheck: boolean = false) {
   // 넓은체크는 "이미 24시간 지난, 놓쳤을 법한 경기"만 대상 — 그래서 끝점을 미래가 아니라 "지금-24시간"으로 잡음
   const windowEnd = wideCheck ? new Date(now.getTime() - 24 * 60 * 60 * 1000) : new Date(now.getTime() + 2 * 60 * 60 * 1000);
 
-  const candidates = await db.select().from(matches).where(and(
-    inArray(matches.status, ["scheduled", "live"]),
-    gte(matches.matchDate, windowStart),
-    lte(matches.matchDate, windowEnd),
-  ));
+  const candidates = await db.select({
+    id: matches.id, externalId: matches.externalId, status: matches.status,
+    homeScore: matches.homeScore, awayScore: matches.awayScore, statusElapsed: matches.statusElapsed,
+    sportName: sports.name,
+  })
+    .from(matches)
+    .leftJoin(leagues, eq(matches.leagueId, leagues.id))
+    .leftJoin(sports, eq(leagues.sportId, sports.id))
+    .where(and(
+      inArray(matches.status, ["scheduled", "live"]),
+      gte(matches.matchDate, windowStart),
+      lte(matches.matchDate, windowEnd),
+    ));
 
   let updated = 0;
   for (const m of candidates) {
     if (!m.externalId) continue;
     try {
-      const fresh = await fetchFixtureById(m.externalId);
-      if (!fresh) continue;
-      const newStatus = mapApiStatus(fresh.fixture.status.short);
-      const homeScore = fresh.goals.home;
-      const awayScore = fresh.goals.away;
-      const elapsed = fresh.fixture.status.elapsed;
-      const statusLong = fresh.fixture.status.long;
+      const isBaseball = m.sportName === "야구";
+      let newStatus: "scheduled" | "live" | "finished" | "cancelled";
+      let homeScore: number | null;
+      let awayScore: number | null;
+      let elapsed: number | null = null;
+      let statusLong: string | null = null;
+
+      if (isBaseball) {
+        const fresh = await fetchBaseballGameById(m.externalId);
+        if (!fresh) continue;
+        newStatus = mapBaseballStatus(fresh.status.short);
+        homeScore = fresh.scores.home.total;
+        awayScore = fresh.scores.away.total;
+        statusLong = fresh.status.long;
+      } else {
+        const fresh = await fetchFixtureById(m.externalId);
+        if (!fresh) continue;
+        newStatus = mapApiStatus(fresh.fixture.status.short);
+        homeScore = fresh.goals.home;
+        awayScore = fresh.goals.away;
+        elapsed = fresh.fixture.status.elapsed;
+        statusLong = fresh.fixture.status.long;
+      }
+
       // 2026 수정: 상태(예정→진행중→종료)가 안 바뀌어도, 진행중이면 스코어/경기시간이 계속 바뀌므로 매번 갱신 대상에 포함
       const scoreChanged = homeScore !== m.homeScore || awayScore !== m.awayScore;
       const elapsedChanged = elapsed !== m.statusElapsed;
@@ -553,8 +587,8 @@ export async function refreshLiveMatchStatuses(wideCheck: boolean = false) {
         }).where(eq(matches.id, m.id));
         updated++;
 
-        // 2026 신규: 방금 "종료"로 바뀐 경기는 이벤트 타임라인 + 상세통계 + 선수개인기록도 같이 가져와 저장
-        if (newStatus === "finished" && m.status !== "finished") {
+        // 2026 신규: 방금 "종료"로 바뀐 경기는 이벤트 타임라인 + 상세통계 + 선수개인기록도 같이 가져와 저장 (축구만 — 야구는 이 API들이 없음)
+        if (!isBaseball && newStatus === "finished" && m.status !== "finished") {
           try {
             const [events, stats, playerStats] = await Promise.all([
               fetchFixtureEvents(m.externalId),
