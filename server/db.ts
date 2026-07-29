@@ -679,6 +679,9 @@ export async function getStandings(leagueId: number, season: number) {
       ? await fetchBaseballStandings(league.externalLeagueId, season)
       : await fetchStandings(league.externalLeagueId, season);
     await db.update(leagues).set({ standingsCache: fresh, standingsUpdatedAt: new Date() }).where(eq(leagues.id, leagueId));
+    if (fresh.length === 0) {
+      return { standings: null, updatedAt: new Date(), error: "이 리그의 순위표 데이터가 API에 아직 없습니다." };
+    }
     return { standings: fresh, updatedAt: new Date() };
   } catch (e) {
     console.warn(`[순위표 조회 실패] leagueId=${leagueId}:`, e);

@@ -12,8 +12,26 @@ const SPORT_BASE: Record<string, string> = {
 
 export const SUPPORTED_SPORTS = Object.keys(SPORT_BASE);
 
+// 2026 신규: API-Sports 분당 요청한도 초과("Too many requests") 방지용 전역 속도제한
+// 여러 곳에서 Promise.all로 동시에 여러 요청을 쏘던 게 누적되어 한도를 넘기던 문제 —
+// 모든 API-Sports 호출이 이 큐를 거치도록 해서, 요청 사이 최소 간격을 강제로 둠
+let lastApiSportsCallAt = 0;
+const API_SPORTS_MIN_INTERVAL_MS = 350; // 초당 약 3건 수준으로 완화 (필요시 조정 가능)
+let apiSportsQueue: Promise<void> = Promise.resolve();
+function throttleApiSportsCall(): Promise<void> {
+  const next = apiSportsQueue.then(async () => {
+    const now = Date.now();
+    const wait = Math.max(0, lastApiSportsCallAt + API_SPORTS_MIN_INTERVAL_MS - now);
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    lastApiSportsCallAt = Date.now();
+  });
+  apiSportsQueue = next;
+  return next;
+}
+
 async function apiSportsGet<T = any>(url: string): Promise<T> {
   if (!ENV.API_SPORTS_KEY) throw new Error("API_SPORTS_KEY가 설정되지 않았습니다 (.env 확인)");
+  await throttleApiSportsCall();
   const res = await fetch(url, {
     headers: { "x-apisports-key": ENV.API_SPORTS_KEY },
   });
@@ -27,6 +45,19 @@ async function apiSportsGet<T = any>(url: string): Promise<T> {
   const errors = data?.errors;
   if (errors && (Array.isArray(errors) ? errors.length > 0 : Object.keys(errors).length > 0)) {
     const detail = Array.isArray(errors) ? errors.join(", ") : Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join(", ");
+    // 2026 신규: rate limit 에러는 별도 표시 + 한 번 자동 재시도(1초 대기 후) — 순간적으로 몰렸을 때 자동 복구되게
+    if (detail.toLowerCase().includes("rate limit") || detail.toLowerCase().includes("too many requests")) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await throttleApiSportsCall();
+      const retryRes = await fetch(url, { headers: { "x-apisports-key": ENV.API_SPORTS_KEY } });
+      if (retryRes.ok) {
+        const retryData = await retryRes.json();
+        const retryErrors = retryData?.errors;
+        if (!retryErrors || (Array.isArray(retryErrors) ? retryErrors.length === 0 : Object.keys(retryErrors).length === 0)) {
+          return retryData;
+        }
+      }
+    }
     throw new Error(`API-Sports 응답 경고: ${detail}`);
   }
   return data;
@@ -172,11 +203,16 @@ export interface BaseballStandingRow {
 export async function fetchBaseballStandings(leagueExternalId: string, season: number): Promise<BaseballStandingRow[]> {
   const url = `${BASEBALL_BASE}/standings?league=${leagueExternalId}&season=${season}`;
   const data = await apiSportsGet<{ response: any[] }>(url);
-  return (data.response ?? []).map((r: any) => ({
-    rank: r.position ?? 0, team: r.team?.name ?? "", teamLogo: r.team?.logo ?? null,
-    points: r.points ?? null, played: r.games?.played ?? 0, win: r.games?.win?.total ?? 0, lose: r.games?.lose?.total ?? 0,
-    winRate: r.games?.win?.percentage != null ? Number(r.games.win.percentage) * 100 : null, form: r.form ?? null,
-  }));
+  return (data.response ?? [])
+    // 2026 수정: API가 팀ID/이름이 비어있는 "빈 틀" 행을 반환하는 경우가 있어(예: KBO 시즌 데이터 미지원), 실제 팀 데이터가 있는 행만 사용
+    .filter((r: any) => r.team?.id && r.team?.name)
+    .map((r: any) => ({
+      rank: r.position ?? 0, team: r.team?.name ?? "", teamLogo: r.team?.logo ?? null,
+      // points는 객체({for, against})라서 숫자로 그대로 못 씀 — 득실차로 변환
+      points: r.points?.for != null && r.points?.against != null ? r.points.for - r.points.against : null,
+      played: r.games?.played ?? 0, win: r.games?.win?.total ?? 0, lose: r.games?.lose?.total ?? 0,
+      winRate: r.games?.win?.percentage != null ? Number(r.games.win.percentage) * 100 : null, form: r.form ?? null,
+    }));
 }
 
 // 2026 신규: 야구 상대전적 (실제 확인됨 — 정상 작동, 2012년까지 과거기록 있음)
