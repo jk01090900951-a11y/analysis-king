@@ -378,6 +378,35 @@ export async function fetchTeamRecentFixtures(teamId: number, last: number = 10)
   }));
 }
 
+// 2026 신규: 야구용 팀 최근경기 (축구 API를 잘못 재사용하던 버그 수정 — 야구는 전용 함수로 분리)
+// API-Baseball의 games 엔드포인트는 축구처럼 last= 파라미터가 없어서, 시즌 전체를 가져온 뒤 직접 최신순 정렬/제한함
+export async function fetchBaseballTeamRecentFixtures(teamId: number, last: number = 10): Promise<TeamRecentFixture[]> {
+  const currentYear = new Date().getFullYear();
+  const results: TeamRecentFixture[] = [];
+  for (const season of [currentYear, currentYear - 1]) {
+    if (results.length >= last) break;
+    try {
+      const url = `${BASEBALL_BASE}/games?team=${teamId}&season=${season}`;
+      const data = await apiSportsGet<{ response: any[] }>(url);
+      const finished = (data.response ?? [])
+        .filter((g: any) => g.status?.short === "FT")
+        .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      for (const g of finished) {
+        results.push({
+          externalId: String(g.id), date: g.date, homeTeam: g.teams?.home?.name ?? "", awayTeam: g.teams?.away?.name ?? "",
+          homeScore: g.scores?.home?.total ?? null, awayScore: g.scores?.away?.total ?? null,
+          league: g.league?.name ?? "", leagueExternalId: String(g.league?.id ?? ""),
+          homeTeamLogo: g.teams?.home?.logo ?? null, awayTeamLogo: g.teams?.away?.logo ?? null, venue: null,
+        });
+        if (results.length >= last) break;
+      }
+    } catch (e) {
+      console.warn(`[야구 팀 최근경기 조회 실패] teamId=${teamId} season=${season}:`, e);
+    }
+  }
+  return results;
+}
+
 // 실제 두 팀 간 최근 맞대결 기록 (팀ID 필요 — match.apiData의 teams.home.id/teams.away.id에서 추출)
 export async function fetchHeadToHead(team1Id: number, team2Id: number, last: number = 10): Promise<RealHeadToHead[]> {
   const url = `${FOOTBALL_BASE}/fixtures/headtohead?h2h=${team1Id}-${team2Id}&last=${last}`;

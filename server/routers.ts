@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { and, eq, desc, gte, lte, sql, isNull, inArray } from "drizzle-orm";
 import { getDb, verifyLogin, getAllUsers, createAdmin, getAdminStats, getAllSports, getAllSportsAdmin, getLeaguesBySport, getAllLeagues, getMatches, getMatchById, getMatchIdsByFilter, getAllBots, getBotById, getBotPicksForMatch, getMatchAnalyses, getHeadToHead, getBotProfile, getBotRecentPicks, getBotStatsByCategory, recordPitcherStarts, getPitcherFatigueScore, getTeamFixtureCongestion, recordPlayerAppearances, getPlayerStartRate, getPlayerRecentWorkload, getTeamFormMultiWindow, syncFootballFixturesForLeague, syncBaseballGamesForLeague, bulkImportLeagues, refreshLiveMatchStatuses, deleteMatchesBefore, getTeamHomeAwayRecord, splitH2hByVenue, getTeamRecentGamesList, getStandings, saveFetchedHistoricalFixture, backfillLeagueSeasons, autoSyncAllLeagues } from "./db";
-import { testApiSportsConnection, fetchCountries, searchLeaguesByCountry, SUPPORTED_SPORTS, fetchHeadToHead, fetchBaseballHeadToHead, fetchInjuries, fetchLineups, fetchOdds, fetchTeamStatistics, fetchTeamCoach, fetchCoachTrophies, fetchTeamTransfers, fetchTeamRecentFixtures, fetchFixtureEvents, fetchFixtureStatistics, fetchFixturePlayerStats } from "./_core/apiSports";
+import { testApiSportsConnection, fetchCountries, searchLeaguesByCountry, SUPPORTED_SPORTS, fetchHeadToHead, fetchBaseballHeadToHead, fetchInjuries, fetchLineups, fetchOdds, fetchTeamStatistics, fetchTeamCoach, fetchCoachTrophies, fetchTeamTransfers, fetchTeamRecentFixtures, fetchBaseballTeamRecentFixtures, fetchFixtureEvents, fetchFixtureStatistics, fetchFixturePlayerStats } from "./_core/apiSports";
 import { users, sports, leagues, matches, aiBots, botPicks, matchAnalysis, headToHead, systemSettings, botChampionHistory } from "../drizzle/schema";
 import { storagePut } from "./storage";
 import { COOKIE_NAME } from "@shared/const";
@@ -812,14 +812,14 @@ export const appRouter = router({
             return { id: -1000 - idx, date: new Date(f.date), isHome, opponent: isHome ? f.awayTeam : f.homeTeam, teamScore, oppScore, outcome, leagueName: f.league };
           };
           if (homeTeamAllGames.length < 3 && homeTeamId) {
-            const fresh = await fetchTeamRecentFixtures(homeTeamId, 50);
+            const fresh = match.sportName === "야구" ? await fetchBaseballTeamRecentFixtures(homeTeamId, 50) : await fetchTeamRecentFixtures(homeTeamId, 50);
             homeTeamAllGames = fresh.map((f, i) => toGameRow(f, match.homeTeam, i));
             homeTeamHomeGames = fresh.filter((f) => f.homeTeam === match.homeTeam).map((f, i) => toGameRow(f, match.homeTeam, i));
             // 화면에만 잠깐 보여주고 버리지 않고, 우리 DB에도 실제로 저장 (다음부터는 API 재호출 없이 우리 데이터에서 바로 나옴)
             for (const f of fresh) { try { await saveFetchedHistoricalFixture(f); } catch (saveErr) { console.warn(`[개별경기 저장 실패, 계속 진행] externalId=${f.externalId}:`, saveErr); } }
           }
           if (awayTeamAllGames.length < 3 && awayTeamId) {
-            const fresh = await fetchTeamRecentFixtures(awayTeamId, 50);
+            const fresh = match.sportName === "야구" ? await fetchBaseballTeamRecentFixtures(awayTeamId, 50) : await fetchTeamRecentFixtures(awayTeamId, 50);
             awayTeamAllGames = fresh.map((f, i) => toGameRow(f, match.awayTeam, i));
             awayTeamAwayGames = fresh.filter((f) => f.awayTeam === match.awayTeam).map((f, i) => toGameRow(f, match.awayTeam, i));
             for (const f of fresh) { try { await saveFetchedHistoricalFixture(f); } catch (saveErr) { console.warn(`[개별경기 저장 실패, 계속 진행] externalId=${f.externalId}:`, saveErr); } }
