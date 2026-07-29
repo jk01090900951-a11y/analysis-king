@@ -86,6 +86,7 @@ export default function AdminMatches() {
   };
 
   const stopRequestedRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // 진행 중에 실수로 창을 닫거나 새로고침하면 경고를 띄워서, "중지" 버튼을 먼저 누르도록 유도
   useEffect(() => {
@@ -96,7 +97,7 @@ export default function AdminMatches() {
     return () => window.removeEventListener("beforeunload", handler);
   }, [progress]);
 
-  const runBulk = async (label: string, ids: number[], fn: (id: number) => Promise<unknown>, kind: "picks" | "analysis") => {
+  const runBulk = async (label: string, ids: number[], fn: (id: number, signal: AbortSignal) => Promise<unknown>, kind: "picks" | "analysis") => {
     stopRequestedRef.current = false;
     setProgress({ label, done: 0, total: ids.length, currentName: findMatchName(ids[0]!) });
     let success = 0;
@@ -111,15 +112,24 @@ export default function AdminMatches() {
         break;
       }
       setProgress({ label, done: i, total: ids.length, currentName: findMatchName(ids[i]!) });
+      // 2026 수정: 매 요청마다 새 AbortController를 만들어, "중지" 버튼이 지금 진행 중인 요청 자체도 끊을 수 있게 함
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
       try {
-        await fn(ids[i]!);
+        await fn(ids[i]!, controller.signal);
         success++;
       } catch (e: any) {
+        if (controller.signal.aborted) {
+          stoppedEarly = true;
+          failedIds.push(...ids.slice(i));
+          break;
+        }
         failedIds.push(ids[i]!);
         lastError = e?.message ?? String(e);
       }
       setProgress({ label, done: i + 1, total: ids.length, currentName: i + 1 < ids.length ? findMatchName(ids[i + 1]!) : undefined });
     }
+    abortControllerRef.current = null;
     setProgress(null);
     utils.match.list.invalidate();
     const failed = failedIds.length;
@@ -139,13 +149,19 @@ export default function AdminMatches() {
     }
   };
 
-  const bulkGenPicks = () => runBulk("픽 일괄 생성", Array.from(selected), (id) => genPicksMutation.mutateAsync({ matchId: id }), "picks");
-  const bulkGenAnalysis = () => runBulk("분석글 일괄 생성", Array.from(selected), (id) => genAnalysisMutation.mutateAsync({ matchId: id }), "analysis");
+  // 2026 수정: 진행중인 요청 자체를 즉시 취소 (기존엔 다음 경기로 못 넘어가게만 막아서 "중지"가 안 먹는 것처럼 보였음)
+  const requestStop = () => {
+    stopRequestedRef.current = true;
+    abortControllerRef.current?.abort();
+  };
+
+  const bulkGenPicks = () => runBulk("픽 일괄 생성", Array.from(selected), (id, signal) => utils.client.bot.generatePicks.mutate({ matchId: id }, { signal }), "picks");
+  const bulkGenAnalysis = () => runBulk("분석글 일괄 생성", Array.from(selected), (id, signal) => utils.client.analysis.generate.mutate({ matchId: id }, { signal }), "analysis");
   const retryFailed = () => {
     if (!lastFailed) return;
     const fn = lastFailed.kind === "picks"
-      ? (id: number) => genPicksMutation.mutateAsync({ matchId: id })
-      : (id: number) => genAnalysisMutation.mutateAsync({ matchId: id });
+      ? (id: number, signal: AbortSignal) => utils.client.bot.generatePicks.mutate({ matchId: id }, { signal })
+      : (id: number, signal: AbortSignal) => utils.client.analysis.generate.mutate({ matchId: id }, { signal });
     runBulk(`${lastFailed.label} (재시도)`, lastFailed.ids, fn, lastFailed.kind);
   };
 
@@ -219,7 +235,7 @@ export default function AdminMatches() {
             <span>{progress.label} 진행 중... ({progress.done}/{progress.total})</span>
             <div className="flex items-center gap-2">
               <span>{Math.round((progress.done / progress.total) * 100)}%</span>
-              <Button size="sm" variant="outline" className="h-6 text-xs border-destructive/40 text-destructive" onClick={() => { stopRequestedRef.current = true; }}>
+              <Button size="sm" variant="outline" className="h-6 text-xs border-destructive/40 text-destructive" onClick={requestStop}>
                 중지
               </Button>
             </div>

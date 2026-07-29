@@ -286,19 +286,36 @@ export async function generateAnalysisForMatch(matchId: number) {
 
       let successCount = 0, failCount = 0, lastErrorMsg = "";
 
+      // 2026 수정: 웹검색을 분석가(봇) 10명이 각자 따로 하면 10번 검색 = 매우 느림
+      // → 경기당 딱 한 번만 검색해서 그 결과를 10명 모두가 공유하도록 변경 (속도 대폭 개선)
+      let webSearchNote = "";
+      try {
+        const searchQuery = `${match.homeTeam} ${match.awayTeam} ${new Date(match.matchDate).toLocaleDateString("ko-KR")}`;
+        const searchResponse = await invokeLLM({
+          messages: [{ role: "user", content: `웹검색 도구를 사용해서 "${searchQuery}" 관련 최신 뉴스(부상자 소식, 선발 라인업 발표, 최근 경기 결과, 팀 분위기 등)를 검색하고, 찾은 핵심 내용만 5문장 이내로 한국어로 요약하세요. 원문을 그대로 베끼지 말고 반드시 당신의 표현으로 바꿔서 요약하세요. 관련 뉴스가 전혀 없으면 "관련 뉴스 없음"이라고만 답하세요.` }],
+          enableWebSearch: true,
+        });
+        const searchResult = searchResponse.choices?.[0]?.message?.content as string | undefined;
+        if (searchResult && !searchResult.includes("관련 뉴스 없음")) {
+          webSearchNote = `[웹검색으로 찾은 최신 정보] ${searchResult}`;
+        }
+      } catch (e) {
+        console.warn(`[경기 웹검색 실패, 검색 없이 진행] match=${matchId}:`, e);
+      }
+
       for (const bot of bots) {
         const existing = await db.select().from(matchAnalysis).where(and(eq(matchAnalysis.botId, bot.id), eq(matchAnalysis.matchId, matchId))).limit(1);
         if (existing.length > 0) { successCount++; continue; } // 캐시 재사용: 이미 생성된 조합은 다시 만들지 않음
 
         const strategyGuide = strategyPrompts[bot.strategy] ?? strategyPrompts.balanced!;
 
-        const prompt = `[종목: ${match.sportName ?? "스포츠"}] 이 경기는 ${match.sportName ?? "해당 종목"} 경기입니다. 반드시 이 종목에 맞는 용어만 사용하세요 (예: 야구 경기에 "포메이션"·"전반/후반" 같은 축구 용어를 쓰지 마세요. 종목에 맞게 이닝/타율/평균자책점 등 해당 종목 고유 용어를 쓰세요).\n\n[웹검색 활용 지침] 웹검색 도구를 사용해서 "${match.homeTeam} ${match.awayTeam} ${new Date(match.matchDate).toLocaleDateString("ko-KR")}" 관련 최신 뉴스(부상자 소식, 선발 라인업 발표, 최근 경기 결과, 팀 분위기 등)를 검색하고, 찾은 내용을 분석에 반영하세요. 단, 뉴스 원문을 그대로 베끼지 말고 반드시 당신의 표현으로 바꿔서 요약·인용하세요 (15단어 이상 원문 그대로 옮기지 말 것). 검색 결과가 없거나 관련 뉴스가 없으면 아래 제공된 데이터만으로 분석하세요.\n\n${strategyGuide}${lengthRequirement}\n\n경기: ${matchInfo}\n리그: ${match.leagueName}\n언더오버 기준: ${match.overUnderLine}${scoreUnit}\n${formNote}\n${congestionNote}\n${h2hNote}\n${homeAwaySplitNote}\n${teamStatsNote}\n${injuriesNote}\n${lineupNote}\n${oddsNote}\n데이터: ${JSON.stringify(apiData)}\n\n[중요1] 위에 나열된 대괄호([...]) 데이터 항목들은 전부 실제로 API에서 가져온 이 경기 고유의 데이터입니다. 절대 무시하거나 대충 언급만 하고 넘어가지 말고, 각 항목의 실제 숫자·이름·날짜를 본문에 구체적으로 인용하세요. 데이터가 비어있는 항목만 건너뛰세요.\n[중요2] 아래 JSON 예시에 들어있는 숫자(60, 30, 10, 2.4, 72 등)는 그냥 "어떤 형태의 값이 필요한지" 보여주는 견본일 뿐, 실제 값이 아닙니다. 반드시 위에 제공된 이 경기의 실제 데이터를 근거로 이 경기만의 고유한 수치를 새로 계산하세요.\n\n다음 JSON 형식으로 반환하세요 (숫자 값은 예시이며 절대 그대로 쓰지 말고 이 경기 기준으로 재계산):\n{"summary":"핵심 요약 1-2문장 (이 경기만의 구체적 포인트 언급)","fullAnalysis":"상세 분석글 (최소 5문단, 문단당 3문장 이상, 위에서 요구한 대로 실제 데이터 4개 이상 구체적 인용, 웹검색으로 찾은 최신 정보가 있다면 자연스럽게 녹여서 서술, 이 종목에 맞는 용어만 사용)","keyStats":{"homeWinRate":60,"awayWinRate":30,"drawRate":10,"avgGoals":2.4,"notes":"이 수치를 도출한 핵심 근거 1문장"},"finalPick":"home","finalPickType":"win_draw_lose","confidence":72}`;
+        const prompt = `[종목: ${match.sportName ?? "스포츠"}] 이 경기는 ${match.sportName ?? "해당 종목"} 경기입니다. 반드시 이 종목에 맞는 용어만 사용하세요 (예: 야구 경기에 "포메이션"·"전반/후반" 같은 축구 용어를 쓰지 마세요. 종목에 맞게 이닝/타율/평균자책점 등 해당 종목 고유 용어를 쓰세요).\n\n${strategyGuide}${lengthRequirement}\n\n경기: ${matchInfo}\n리그: ${match.leagueName}\n언더오버 기준: ${match.overUnderLine}${scoreUnit}\n${formNote}\n${congestionNote}\n${h2hNote}\n${homeAwaySplitNote}\n${teamStatsNote}\n${injuriesNote}\n${lineupNote}\n${oddsNote}\n${webSearchNote}\n데이터: ${JSON.stringify(apiData)}\n\n[중요1] 위에 나열된 대괄호([...]) 데이터 항목들은 전부 실제로 API·웹검색에서 가져온 이 경기 고유의 정보입니다. 절대 무시하거나 대충 언급만 하고 넘어가지 말고, 각 항목의 실제 숫자·이름·날짜를 본문에 구체적으로 인용하세요. 데이터가 비어있는 항목만 건너뛰세요.\n[중요2] 아래 JSON 예시에 들어있는 숫자(60, 30, 10, 2.4, 72 등)는 그냥 "어떤 형태의 값이 필요한지" 보여주는 견본일 뿐, 실제 값이 아닙니다. 반드시 위에 제공된 이 경기의 실제 데이터를 근거로 이 경기만의 고유한 수치를 새로 계산하세요.\n\n다음 JSON 형식으로 반환하세요 (숫자 값은 예시이며 절대 그대로 쓰지 말고 이 경기 기준으로 재계산):\n{"summary":"핵심 요약 1-2문장 (이 경기만의 구체적 포인트 언급)","fullAnalysis":"상세 분석글 (최소 5문단, 문단당 3문장 이상, 위에서 요구한 대로 실제 데이터 4개 이상 구체적 인용, 웹검색으로 찾은 최신 정보가 있다면 자연스럽게 녹여서 서술, 이 종목에 맞는 용어만 사용)","keyStats":{"homeWinRate":60,"awayWinRate":30,"drawRate":10,"avgGoals":2.4,"notes":"이 수치를 도출한 핵심 근거 1문장"},"finalPick":"home","finalPickType":"win_draw_lose","confidence":72}`;
 
         // 2026: LLM 호출 실패 시 더 이상 가짜 기본문구로 채워 저장하지 않습니다.
         // 실패한 봇은 그냥 건너뛰고(DB에 저장 안 함) → 다음에 "분석글 생성"을 다시 누르면
         // (예: Claude API 키를 뒤늦게 설정한 뒤) 그 봇만 정상적으로 재시도됩니다.
         try {
-          const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], enableWebSearch: true, response_format: { type: "json_schema", json_schema: { name: "analysis", strict: false, schema: { type: "object", properties: { summary: { type: "string" }, fullAnalysis: { type: "string" }, keyStats: { type: "object" }, finalPick: { type: "string" }, finalPickType: { type: "string" }, confidence: { type: "number" } }, required: ["summary", "fullAnalysis", "finalPick", "finalPickType", "confidence"], additionalProperties: true } } } });
+          const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "analysis", strict: false, schema: { type: "object", properties: { summary: { type: "string" }, fullAnalysis: { type: "string" }, keyStats: { type: "object" }, finalPick: { type: "string" }, finalPickType: { type: "string" }, confidence: { type: "number" } }, required: ["summary", "fullAnalysis", "finalPick", "finalPickType", "confidence"], additionalProperties: true } } } });
           const msgContent = response.choices?.[0]?.message?.content as string | undefined;
           if (!msgContent) throw new Error("LLM 응답이 비어있습니다.");
           const parsed = JSON.parse(msgContent);
