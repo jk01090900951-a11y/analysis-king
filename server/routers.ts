@@ -207,7 +207,7 @@ export async function ensureMatchDetailData(matchId: number) {
   return { match, apiData, h2hNote, injuriesNote, lineupNote, oddsNote, teamStatsNote, homeAwaySplitNote };
 }
 
-async function generateAnalysisForMatch(matchId: number) {
+export async function generateAnalysisForMatch(matchId: number) {
       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
       const { match, apiData, h2hNote, injuriesNote, lineupNote, oddsNote, teamStatsNote, homeAwaySplitNote } = await ensureMatchDetailData(matchId);
       const allBots = await getAllBots();
@@ -299,6 +299,33 @@ async function generateAnalysisForMatch(matchId: number) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `분석글 생성 전부 실패 (${failCount}건) — ${lastErrorMsg}` });
       }
       return { success: true, successCount, failCount };
+}
+
+// 2026 신규: "며칠 전, 몇 시에" 다음날(혹은 N일 후) 경기 분석글을 자동으로 생성하는 스케줄러 로직
+// daysBefore=1 이면 "오늘 기준 +1일에 열리는 경기들"을 대상으로 함 (즉 "하루 전"에 미리 만들어둠)
+export async function autoGenerateUpcomingAnalyses(daysBefore: number) {
+  const db = await getDb(); if (!db) return { checked: 0, generated: 0, failed: 0 };
+  const targetStart = new Date(); targetStart.setDate(targetStart.getDate() + daysBefore); targetStart.setHours(0, 0, 0, 0);
+  const targetEnd = new Date(targetStart); targetEnd.setHours(23, 59, 59, 999);
+
+  const targetMatches = await db.select({ id: matches.id }).from(matches).where(and(
+    gte(matches.matchDate, targetStart), lte(matches.matchDate, targetEnd),
+    sql`${matches.status} IN ('scheduled', 'live')`,
+  ));
+
+  let generated = 0, failed = 0;
+  for (const m of targetMatches) {
+    const existing = await db.select({ id: matchAnalysis.id }).from(matchAnalysis).where(eq(matchAnalysis.matchId, m.id)).limit(1);
+    if (existing.length > 0) continue; // 이미 있으면 건너뜀
+    try {
+      await generateAnalysisForMatch(m.id);
+      generated++;
+    } catch (e) {
+      failed++;
+      console.warn(`[분석글 자동생성 실패] matchId=${m.id}:`, e);
+    }
+  }
+  return { checked: targetMatches.length, generated, failed };
 }
 
 // 경기 정산 핵심 로직 — match.settle(관리자수동)/admin.settleMatch 공용
@@ -1005,6 +1032,36 @@ export const appRouter = router({
       }),
     // 수동 "지금 전체 동기화" — 자동 스케줄과 무관하게 항상 사용 가능
     runFullSyncNow: adminProcedure.mutation(() => autoSyncAllLeagues()),
+    // 2026 신규: 분석글 자동생성 스케줄 (며칠 전 + 몇 시) — 항상 수동 실행 버튼과 병행
+    getAnalysisAutoSchedule: adminProcedure.query(async () => {
+      const db = await getDb(); if (!db) return { enabled: false, daysBefore: 1, time: "14:00" };
+      const keys = ["analysis_auto.enabled", "analysis_auto.days_before", "analysis_auto.time"];
+      const rows = await db.select().from(systemSettings).where(inArray(systemSettings.key, keys));
+      const get = (k: string, fallback: string) => rows.find((r) => r.key === k)?.value ?? fallback;
+      return {
+        enabled: get("analysis_auto.enabled", "false") === "true",
+        daysBefore: Number(get("analysis_auto.days_before", "1")),
+        time: get("analysis_auto.time", "14:00"),
+      };
+    }),
+    updateAnalysisAutoSchedule: adminProcedure
+      .input(z.object({ enabled: z.boolean(), daysBefore: z.number().min(1).max(14), time: z.string() }))
+      .mutation(async ({ input }) => {
+        const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        const upsert = async (key: string, value: string) => {
+          const exists = await db.select().from(systemSettings).where(eq(systemSettings.key, key)).limit(1);
+          if (exists.length > 0) await db.update(systemSettings).set({ value }).where(eq(systemSettings.key, key));
+          else await db.insert(systemSettings).values({ key, value });
+        };
+        await upsert("analysis_auto.enabled", String(input.enabled));
+        await upsert("analysis_auto.days_before", String(input.daysBefore));
+        await upsert("analysis_auto.time", input.time);
+        return { success: true };
+      }),
+    // 수동 "지금 자동생성 실행" — 스케줄과 무관하게 항상 사용 가능
+    runAutoGenerateNow: adminProcedure
+      .input(z.object({ daysBefore: z.number().min(1).max(14) }))
+      .mutation(({ input }) => autoGenerateUpcomingAnalyses(input.daysBefore)),
     // 지정한 날짜 이전 경기에 이미 생성된 분석글(봇 글)만 삭제 — 경기 자체나 상세데이터(라인업 등)는 유지
     cleanupOldAnalyses: adminProcedure
       .input(z.object({ beforeDate: z.string() }))
@@ -1025,6 +1082,25 @@ export const appRouter = router({
       await db.delete(matchAnalysis);
       await db.delete(botPicks);
       return { deletedAnalyses: Number(analysisCount?.count ?? 0), deletedPicks: Number(pickCount?.count ?? 0) };
+    }),
+    // 2026 신규: 테스트로 쌓인 경기·분석글·픽·상대전적을 전부 지우고 "0"부터 다시 시작 (리그/종목/봇 설정은 유지)
+    resetAllMatchData: adminProcedure.mutation(async () => {
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const [matchCount] = await db.select({ count: sql<number>`count(*)` }).from(matches);
+      const [analysisCount] = await db.select({ count: sql<number>`count(*)` }).from(matchAnalysis);
+      const [pickCount] = await db.select({ count: sql<number>`count(*)` }).from(botPicks);
+      const [h2hCount] = await db.select({ count: sql<number>`count(*)` }).from(headToHead);
+      // 참조 관계 순서대로 삭제 (matches를 참조하는 테이블들 먼저)
+      await db.delete(matchAnalysis);
+      await db.delete(botPicks);
+      await db.delete(headToHead);
+      await db.delete(matches);
+      return {
+        deletedMatches: Number(matchCount?.count ?? 0),
+        deletedAnalyses: Number(analysisCount?.count ?? 0),
+        deletedPicks: Number(pickCount?.count ?? 0),
+        deletedH2h: Number(h2hCount?.count ?? 0),
+      };
     }),
     // 2026 신규: 경기 하나만 분석글·픽 삭제 (경기 자체와 상세데이터는 유지) — 삭제 후 다시 "분석글 생성" 누르면 깨끗하게 재생성됨
     deleteMatchAnalysis: adminProcedure

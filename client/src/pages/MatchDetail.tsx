@@ -247,7 +247,11 @@ export default function MatchDetail() {
           </div>
           <div className="px-5 py-5 grid grid-cols-3 items-center gap-3">
             <div className="text-center">
-              <div className="w-16 h-16 mx-auto rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-3xl mb-2">🏠</div>
+              {match.homeTeamLogo ? (
+                <img src={match.homeTeamLogo} alt={match.homeTeam} className="w-16 h-16 mx-auto rounded-full object-contain bg-white/5 border border-blue-500/20 mb-2" />
+              ) : (
+                <div className="w-16 h-16 mx-auto rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-3xl mb-2">🏠</div>
+              )}
               <p className="font-bold text-sm leading-tight">{match.homeTeam}</p>
 
             </div>
@@ -266,7 +270,11 @@ export default function MatchDetail() {
               {match.overUnderLine && <p className="text-xs text-foreground/30 mt-1">O/U {match.overUnderLine}</p>}
             </div>
             <div className="text-center">
-              <div className="w-16 h-16 mx-auto rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center text-3xl mb-2">✈️</div>
+              {match.awayTeamLogo ? (
+                <img src={match.awayTeamLogo} alt={match.awayTeam} className="w-16 h-16 mx-auto rounded-full object-contain bg-white/5 border border-red-500/20 mb-2" />
+              ) : (
+                <div className="w-16 h-16 mx-auto rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center text-3xl mb-2">✈️</div>
+              )}
               <p className="font-bold text-sm leading-tight">{match.awayTeam}</p>
 
             </div>

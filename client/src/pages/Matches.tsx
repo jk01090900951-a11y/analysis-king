@@ -13,6 +13,11 @@ import { formatLiveStatus } from "@/lib/matchStatus";
 
 const statusLabel: Record<string, string> = { scheduled: "예정", live: "진행중", finished: "종료", cancelled: "취소" };
 const statusClass: Record<string, string> = { scheduled: "status-scheduled", live: "status-live", finished: "status-finished", cancelled: "status-cancelled" };
+const STATUS_SECTIONS: { key: "live" | "scheduled" | "finished"; label: string }[] = [
+  { key: "live", label: "🔴 진행중" },
+  { key: "scheduled", label: "⏰ 예정" },
+  { key: "finished", label: "✅ 종료" },
+];
 
 function toDateStr(d: Date) {
   return d.toISOString().slice(0, 10);
@@ -39,7 +44,11 @@ function MatchCard({ match, isFav, onToggleFav }: { match: any; isFav: boolean; 
         </div>
         <div className="flex items-center justify-between gap-3 mb-4">
           <div className="flex-1 text-center">
-            <div className="w-12 h-12 rounded-full bg-accent flex items-center justify-center text-2xl mx-auto mb-2">{match.sportIcon}</div>
+            {match.homeTeamLogo ? (
+              <img src={match.homeTeamLogo} alt={match.homeTeam} className="w-12 h-12 rounded-full object-contain bg-white/5 mx-auto mb-2" />
+            ) : (
+              <div className="w-12 h-12 rounded-full bg-accent flex items-center justify-center text-2xl mx-auto mb-2">{match.sportIcon}</div>
+            )}
             <p className="text-sm font-semibold line-clamp-1">{match.homeTeam}</p>
             <p className="text-xs text-muted-foreground">홈</p>
           </div>
@@ -55,7 +64,11 @@ function MatchCard({ match, isFav, onToggleFav }: { match: any; isFav: boolean; 
             )}
           </div>
           <div className="flex-1 text-center">
-            <div className="w-12 h-12 rounded-full bg-accent flex items-center justify-center text-2xl mx-auto mb-2">{match.sportIcon}</div>
+            {match.awayTeamLogo ? (
+              <img src={match.awayTeamLogo} alt={match.awayTeam} className="w-12 h-12 rounded-full object-contain bg-white/5 mx-auto mb-2" />
+            ) : (
+              <div className="w-12 h-12 rounded-full bg-accent flex items-center justify-center text-2xl mx-auto mb-2">{match.sportIcon}</div>
+            )}
             <p className="text-sm font-semibold line-clamp-1">{match.awayTeam}</p>
             <p className="text-xs text-muted-foreground">원정</p>
           </div>
@@ -88,6 +101,46 @@ function MatchCard({ match, isFav, onToggleFav }: { match: any; isFav: boolean; 
   );
 }
 
+// 리그별로 묶어서 렌더링 (즐겨찾기한 "그 경기"만 자기 리그 목록 안에서 위로 — 리그 전체가 움직이지 않음)
+function LeagueGroups({ matches, favMatches, toggleFavMatch, isFavMatch }: { matches: any[]; favMatches: number[]; toggleFavMatch: (id: number) => void; isFavMatch: (id: number) => boolean }) {
+  const groups = useMemo(() => {
+    const map = new Map<string, any[]>();
+    for (const m of matches) {
+      const key = m.leagueName ?? "기타";
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(m);
+    }
+    return Array.from(map.entries()).map(([leagueName, list]) => {
+      // 리그 순서 자체는 그대로 두고, 그 리그 "안에서만" 즐겨찾기 경기를 앞으로
+      const sorted = [...list].sort((a, b) => {
+        const favA = favMatches.includes(a.id) ? 0 : 1;
+        const favB = favMatches.includes(b.id) ? 0 : 1;
+        return favA - favB;
+      });
+      return { leagueName, matches: sorted, icon: list[0]?.sportIcon };
+    });
+  }, [matches, favMatches]);
+
+  return (
+    <div className="space-y-8">
+      {groups.map((group) => (
+        <div key={group.leagueName}>
+          <div className="flex items-center gap-2 mb-3 pb-2 border-b border-border/50">
+            <span className="text-lg">{group.icon}</span>
+            <h3 className="font-bold text-base">{group.leagueName}</h3>
+            <span className="text-xs text-muted-foreground">({group.matches.length}경기)</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {group.matches.map((match: any) => (
+              <MatchCard key={match.id} match={match} isFav={isFavMatch(match.id)} onToggleFav={() => toggleFavMatch(match.id)} />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function Matches() {
   const search = useSearch();
   const { favorites } = useFavoriteSports();
@@ -97,7 +150,7 @@ export default function Matches() {
   const [selectedLeague, setSelectedLeague] = useState<number | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [favoritesOnly, setFavoritesOnly] = useState(false);
-  // "live" = 실시간 탭(진행중인 경기만) / null = 오늘 중심 기본 보기(진행중→예정→오늘종료 순) / "YYYY-MM-DD" = 특정 날짜 전체
+  // "live" = 실시간 탭(진행중인 경기만) / null = 오늘 중심 기본 보기 / "YYYY-MM-DD" = 특정 날짜 전체
   const [selectedDate, setSelectedDate] = useState<string | "live" | null>("live");
   const [showDatePicker, setShowDatePicker] = useState(false);
 
@@ -116,46 +169,31 @@ export default function Matches() {
   const { data: matchesData, isLoading } = trpc.match.list.useQuery({
     sportId: favoritesOnly ? undefined : (selectedSport ?? undefined),
     leagueId: selectedLeague ?? undefined,
-    // 실시간 탭: 진행중인 경기만 / 그 외: 상태 필터 드롭다운값 그대로
     status: isLiveTab ? "live" : (statusFilter === "all" ? undefined : statusFilter),
     limit: 100,
     date: specificDate ?? undefined,
-    excludeOldFinished: !specificDate, // 특정 날짜 지정 안 했을 때만 "어제 이전 종료 경기" 숨김
-    // 실시간 탭 또는 오늘 날짜를 볼 때는 진행중→예정→종료 순으로, 그 외 특정 날짜는 시간순이 더 자연스러움
+    excludeOldFinished: !specificDate,
     statusPriority: !specificDate || specificDate === todayStr0,
     sortDesc: false,
-  }, { refetchInterval: isLiveTab ? 15000 : 30000 }); // 실시간 탭은 좀 더 자주 새로고침
+  }, { refetchInterval: isLiveTab ? 15000 : 30000 });
   const allMatches = matchesData?.rows;
-  const sportFiltered = favoritesOnly ? (allMatches ?? []).filter((m: any) => favorites.includes(m.sportId)) : allMatches;
+  const sportFiltered = useMemo(
+    () => (favoritesOnly ? (allMatches ?? []).filter((m: any) => favorites.includes(m.sportId)) : (allMatches ?? [])),
+    [allMatches, favoritesOnly, favorites]
+  );
 
-  // 2026 신규: 리그별로 묶어서 표시 — 즐겨찾기한 경기가 있는 리그가 맨 위, 그 안에서도 즐겨찾기 경기가 먼저
-  const groupedByLeague = useMemo(() => {
-    const list = sportFiltered ?? [];
-    const groups = new Map<string, any[]>();
-    for (const m of list) {
-      const key = m.leagueName ?? "기타";
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(m);
+  // 2026 재수정: "라이브/예정/종료" 3분류를 먼저 나누고, 그 안에서만 리그별로 묶음
+  // (리그로만 묶으면 즐겨찾기 하나 눌렀다고 리그 전체가 움직이거나, 오늘 날짜에서 라이브/예정/종료 순서가 뒤섞이는 문제가 있었음)
+  const bucketed = useMemo(() => {
+    const live: any[] = [], scheduled: any[] = [], finished: any[] = [];
+    for (const m of sportFiltered) {
+      if (m.status === "live") live.push(m);
+      else if (m.status === "finished") finished.push(m);
+      else scheduled.push(m);
     }
-    const entries = Array.from(groups.entries()).map(([leagueName, matches]) => {
-      const sorted = [...matches].sort((a, b) => {
-        const favA = favMatches.includes(a.id) ? 0 : 1;
-        const favB = favMatches.includes(b.id) ? 0 : 1;
-        if (favA !== favB) return favA - favB;
-        return 0; // 원래 서버 정렬 순서(진행중→예정 등) 유지
-      });
-      const hasFav = sorted.some((m) => favMatches.includes(m.id));
-      const earliestTime = Math.min(...matches.map((m: any) => new Date(m.matchDate).getTime()));
-      return { leagueName, matches: sorted, hasFav, earliestTime, icon: matches[0]?.sportIcon };
-    });
-    entries.sort((a, b) => {
-      if (a.hasFav !== b.hasFav) return a.hasFav ? -1 : 1;
-      return a.earliestTime - b.earliestTime;
-    });
-    return entries;
-  }, [sportFiltered, favMatches]);
+    return { live, scheduled, finished };
+  }, [sportFiltered]);
 
-  // 오늘 기준 -3일 ~ +3일 빠른 날짜 스트립 (와이즈토토/라이브스코어류 UX 참고)
   const dateStrip = useMemo(() => {
     const days = [];
     for (let i = -3; i <= 3; i++) {
@@ -166,13 +204,13 @@ export default function Matches() {
     return days;
   }, []);
   const todayStr = todayStr0;
+  const totalCount = sportFiltered.length;
 
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
       <CategoryMenu />
 
-      {/* 날짜 스트립 + 달력 */}
       <div className="border-b border-border bg-card/30">
         <div className="container px-4 md:px-6 py-2 flex items-center gap-1 overflow-x-auto scrollbar-hide">
           <button
@@ -220,7 +258,7 @@ export default function Matches() {
             {favoritesOnly ? "즐겨찾기 경기" : isLiveTab ? "실시간 경기" : specificDate ? `${new Date(specificDate).toLocaleDateString("ko-KR", { month: "long", day: "numeric" })} 경기` : "경기 분석"}
           </h1>
           <p className="text-muted-foreground text-sm mt-1">
-            {isLiveTab ? "지금 진행 중인 경기만 표시됩니다" : specificDate ? "선택한 날짜의 경기입니다" : "진행중 → 예정 → 오늘 종료 순으로 표시됩니다"}
+            {isLiveTab ? "지금 진행 중인 경기만 표시됩니다" : "진행중 → 예정 → 종료 순으로, 그 안에서 리그별로 묶어 보여드립니다"}
           </p>
         </div>
         <div className="flex flex-wrap gap-3 mb-6">
@@ -264,28 +302,26 @@ export default function Matches() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {[...Array(6)].map((_, i) => <div key={i} className="h-52 rounded-2xl bg-card border border-border animate-pulse" />)}
           </div>
-        ) : groupedByLeague.length === 0 ? (
+        ) : totalCount === 0 ? (
           <div className="text-center py-20 text-muted-foreground">
             <Clock className="w-12 h-12 mx-auto mb-3 opacity-30" />
             <p>{favoritesOnly ? "즐겨찾기한 종목에 예정된 경기가 없습니다." : isLiveTab ? "지금 진행 중인 경기가 없습니다." : "조건에 맞는 경기가 없습니다."}</p>
           </div>
+        ) : isLiveTab ? (
+          // 실시간 탭은 어차피 전부 라이브라 3분류 헤더 없이 바로 리그별로만
+          <LeagueGroups matches={sportFiltered} favMatches={favMatches} toggleFavMatch={toggleFavMatch} isFavMatch={isFavMatch} />
         ) : (
-          <div className="space-y-8">
-            {groupedByLeague.map((group) => (
-              <div key={group.leagueName}>
-                <div className="flex items-center gap-2 mb-3 pb-2 border-b border-border/50">
-                  <span className="text-lg">{group.icon}</span>
-                  <h2 className="font-bold text-base">{group.leagueName}</h2>
-                  <span className="text-xs text-muted-foreground">({group.matches.length}경기)</span>
-                  {group.hasFav && <Star className="w-3.5 h-3.5 fill-primary text-primary ml-1" />}
+          <div className="space-y-10">
+            {STATUS_SECTIONS.map(({ key, label }) => {
+              const list = bucketed[key];
+              if (list.length === 0) return null;
+              return (
+                <div key={key}>
+                  <h2 className="text-lg font-bold mb-4 flex items-center gap-2">{label} <span className="text-sm font-normal text-muted-foreground">({list.length}경기)</span></h2>
+                  <LeagueGroups matches={list} favMatches={favMatches} toggleFavMatch={toggleFavMatch} isFavMatch={isFavMatch} />
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {group.matches.map((match: any) => (
-                    <MatchCard key={match.id} match={match} isFav={isFavMatch(match.id)} onToggleFav={() => toggleFavMatch(match.id)} />
-                  ))}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

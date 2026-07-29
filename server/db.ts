@@ -513,13 +513,17 @@ function mapApiStatus(short: string): "scheduled" | "live" | "finished" | "cance
 // 예전엔 5분마다 "앞으로 30일치 예정경기 전부"를 확인해서 API를 과도하게 소모했음
 // → wideCheck=false(기본, 5분마다): 최근 24시간 이내 시작~2시간 이내 시작예정만 확인 (실제로 상태변화 가능성 있는 것만)
 // → wideCheck=true(하루 몇 번만): 30일 전체를 확인해서 혹시 놓친 경기를 뒤늦게라도 잡음
+// 2026 재수정: 넓은체크(wideCheck)도 다시 생각해보니 "미래 30일"을 볼 필요가 없었음
+// (아직 시작 안 한 경기는 상태가 바뀔 리 없으므로 확인이 낭비) → 진짜 필요한 건 "이미 시작했어야 하는데
+// 24시간 좁은창을 벗어나서 놓친" 과거 경기뿐. 그래서 미래 쪽은 아예 안 보고, 과거 30일만 좁게 확인.
 export async function refreshLiveMatchStatuses(wideCheck: boolean = false) {
   const db = await getDb();
   if (!db) return { checked: 0, updated: 0 };
 
   const now = new Date();
   const windowStart = new Date(now.getTime() - (wideCheck ? 30 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000));
-  const windowEnd = new Date(now.getTime() + (wideCheck ? 30 * 60 * 1000 : 2 * 60 * 60 * 1000));
+  // 넓은체크는 "이미 24시간 지난, 놓쳤을 법한 경기"만 대상 — 그래서 끝점을 미래가 아니라 "지금-24시간"으로 잡음
+  const windowEnd = wideCheck ? new Date(now.getTime() - 24 * 60 * 60 * 1000) : new Date(now.getTime() + 2 * 60 * 60 * 1000);
 
   const candidates = await db.select().from(matches).where(and(
     inArray(matches.status, ["scheduled", "live"]),
@@ -780,6 +784,20 @@ export async function syncBaseballGamesForLeague(leagueId: number, season: numbe
     created++;
   }
   return { created, skipped, total: games.length, usedSeason };
+}
+
+// 2026 신규: 분석글 자동생성 스케줄 설정 조회 — index.ts 스케줄러가 매분 확인할 때 사용
+export async function getAnalysisAutoScheduleSettings() {
+  const db = await getDb();
+  if (!db) return { enabled: false, daysBefore: 1, time: "14:00" };
+  const keys = ["analysis_auto.enabled", "analysis_auto.days_before", "analysis_auto.time"];
+  const rows = await db.select().from(systemSettings).where(inArray(systemSettings.key, keys));
+  const get = (k: string, fallback: string) => rows.find((r) => r.key === k)?.value ?? fallback;
+  return {
+    enabled: get("analysis_auto.enabled", "false") === "true",
+    daysBefore: Number(get("analysis_auto.days_before", "1")),
+    time: get("analysis_auto.time", "14:00"),
+  };
 }
 
 // 2026 신규: 관리자가 설정한 자동 동기화 스케줄(요일+시간) 조회 — index.ts의 스케줄러가 매분 확인할 때 사용

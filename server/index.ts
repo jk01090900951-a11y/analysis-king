@@ -5,7 +5,8 @@ import path from "path";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "./routers";
 import { createContext } from "./_core/trpc";
-import { ensureBootstrapAdmin, refreshLiveMatchStatuses, autoSyncAllLeagues, getSyncScheduleSettings } from "./db";
+import { ensureBootstrapAdmin, refreshLiveMatchStatuses, autoSyncAllLeagues, getSyncScheduleSettings, getAnalysisAutoScheduleSettings } from "./db";
+import { autoGenerateUpcomingAnalyses } from "./routers";
 import { ENV } from "./_core/env";
 
 const app = express();
@@ -37,12 +38,12 @@ ensureBootstrapAdmin().finally(() => {
       .catch((e) => console.error("[경기상태 자동갱신 실패]", e));
   }, 5 * 60 * 1000);
 
-  // 2026 신규: 3시간마다 한 번, 30일 전체 범위로 넓게 확인해서 혹시 놓친(방치된) 경기를 뒤늦게라도 잡아줌
+  // 2026 신규: 하루 한 번, 과거에 놓쳤을 법한 경기만 좁게 보완 확인 (매일 새벽 4시경)
   setInterval(() => {
     refreshLiveMatchStatuses(true)
-      .then((r) => { if (r.updated > 0) console.log(`[경기상태 보완갱신(넓은범위)] 확인 ${r.checked}건 중 ${r.updated}건 갱신됨`); })
+      .then((r) => { if (r.updated > 0) console.log(`[경기상태 보완갱신(과거놓친것)] 확인 ${r.checked}건 중 ${r.updated}건 갱신됨`); })
       .catch((e) => console.error("[경기상태 보완갱신 실패]", e));
-  }, 3 * 60 * 60 * 1000);
+  }, 24 * 60 * 60 * 1000);
 
   // 2026 신규: 관리자가 지정한 요일+시간에 맞춰 전체 리그 자동 동기화 (매분 확인, 같은 분에 중복 실행 방지)
   // 예) 요일=월,수,금 시간=00:00 으로 설정하면 그 요일 그 시각에만 실행됨. 수동 버튼은 이 스케줄과 별개로 항상 사용 가능.
@@ -67,5 +68,28 @@ ensureBootstrapAdmin().finally(() => {
         }
       })
       .catch((e) => console.error("[동기화 스케줄 확인 실패]", e));
+  }, 60 * 1000);
+
+  // 2026 신규: 관리자가 지정한 "며칠 전 몇 시"에 맞춰 그날짜 경기들 분석글을 자동생성 (매분 확인, 같은 분 중복실행 방지)
+  // 예) days_before=1, time=14:00 → 매일 14:00에 "내일 열리는 경기"들의 분석글을 미리 만들어둠
+  let lastAutoGenMinuteKey = "";
+  setInterval(() => {
+    getAnalysisAutoScheduleSettings()
+      .then((schedule) => {
+        if (!schedule.enabled) return;
+        const now = new Date();
+        const hh = String(now.getHours()).padStart(2, "0");
+        const mm = String(now.getMinutes()).padStart(2, "0");
+        const nowTime = `${hh}:${mm}`;
+        const minuteKey = `${now.toDateString()}_${nowTime}`;
+        if (schedule.time === nowTime && lastAutoGenMinuteKey !== minuteKey) {
+          lastAutoGenMinuteKey = minuteKey;
+          console.log(`[분석글 예약 자동생성] ${nowTime} 조건 일치 — ${schedule.daysBefore}일 후 경기 대상 실행 시작`);
+          autoGenerateUpcomingAnalyses(schedule.daysBefore)
+            .then((r) => console.log(`[분석글 예약 자동생성] 대상 ${r.checked}건 — 성공 ${r.generated}, 실패 ${r.failed}`))
+            .catch((e) => console.error("[분석글 예약 자동생성 실패]", e));
+        }
+      })
+      .catch((e) => console.error("[분석글 자동생성 스케줄 확인 실패]", e));
   }, 60 * 1000);
 });

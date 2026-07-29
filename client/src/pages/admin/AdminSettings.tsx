@@ -26,12 +26,40 @@ export default function AdminSettings() {
     onSuccess: () => { toast.success("분석글 생성 정책 저장 완료"); utils.admin.getGenerationPolicy.invalidate(); },
     onError: (e) => toast.error(e.message),
   });
+
+  // 2026 신규: 분석글 자동생성 스케줄 (며칠 전 + 몇 시)
+  const { data: autoGenSchedule } = trpc.admin.getAnalysisAutoSchedule.useQuery();
+  const [autoGenEnabled, setAutoGenEnabled] = useState(false);
+  const [autoGenDaysBefore, setAutoGenDaysBefore] = useState(1);
+  const [autoGenTime, setAutoGenTime] = useState("14:00");
+  useEffect(() => {
+    if (autoGenSchedule) {
+      setAutoGenEnabled(autoGenSchedule.enabled);
+      setAutoGenDaysBefore(autoGenSchedule.daysBefore);
+      setAutoGenTime(autoGenSchedule.time);
+    }
+  }, [autoGenSchedule]);
+  const updateAutoGenSchedule = trpc.admin.updateAnalysisAutoSchedule.useMutation({
+    onSuccess: () => toast.success("분석글 자동생성 스케줄 저장 완료"),
+    onError: (e) => toast.error(e.message),
+  });
+  const runAutoGenNow = trpc.admin.runAutoGenerateNow.useMutation({
+    onSuccess: (r: any) => { toast.success(`수동 실행 완료 — 대상 ${r.checked}건, 성공 ${r.generated}, 실패 ${r.failed}`); utils.match.list.invalidate(); },
+    onError: (e) => toast.error(e.message),
+  });
   const cleanupAnalyses = trpc.admin.cleanupOldAnalyses.useMutation({
     onSuccess: (r) => { toast.success(`과거 분석글 ${r.deleted}건 삭제 완료 (경기 자체와 상세데이터는 유지됨)`); utils.match.list.invalidate(); },
     onError: (e) => toast.error(e.message),
   });
   const wipeAll = trpc.admin.wipeAllAnalyses.useMutation({
     onSuccess: (r) => { toast.success(`전체 초기화 완료 — 분석글 ${r.deletedAnalyses}건, 픽 ${r.deletedPicks}건 삭제됨`); utils.match.list.invalidate(); },
+    onError: (e) => toast.error(e.message),
+  });
+  const resetAllMatchData = trpc.admin.resetAllMatchData.useMutation({
+    onSuccess: (r: any) => {
+      toast.success(`완전 초기화 완료 — 경기 ${r.deletedMatches}건, 분석글 ${r.deletedAnalyses}건, 픽 ${r.deletedPicks}건, 상대전적 ${r.deletedH2h}건 삭제됨`, { duration: 10000 });
+      utils.match.list.invalidate();
+    },
     onError: (e) => toast.error(e.message),
   });
 
@@ -96,6 +124,37 @@ export default function AdminSettings() {
           </Button>
         </div>
 
+        <div className="p-4 rounded-xl bg-primary/5 border-2 border-primary/30 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-bold flex items-center gap-2">
+              분석글 자동생성 스케줄
+              <span className={`text-xs px-2 py-0.5 rounded-full ${autoGenEnabled ? "bg-green-500/20 text-green-400" : "bg-muted text-muted-foreground"}`}>{autoGenEnabled ? "사용중" : "꺼짐"}</span>
+            </p>
+            <Button size="sm" variant="outline" onClick={() => runAutoGenNow.mutate({ daysBefore: autoGenDaysBefore })} disabled={runAutoGenNow.isPending} className="border-primary/40">
+              {runAutoGenNow.isPending ? "실행 중..." : "지금 수동 실행"}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">지정한 시각에, "오늘 기준 N일 후"에 열리는 경기들의 분석글을 자동으로 미리 만들어둡니다. 예: 1일 전 + 14:00 → 매일 14시에 내일 경기 분석글을 미리 생성.</p>
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <Switch checked={autoGenEnabled} onCheckedChange={setAutoGenEnabled} />
+            자동생성 사용
+          </label>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground">며칠 후 경기</span>
+              <Input type="number" min={1} max={14} value={autoGenDaysBefore} onChange={(e) => setAutoGenDaysBefore(Number(e.target.value))} className="w-16 h-8 text-sm" />
+              <span className="text-xs text-muted-foreground">일 후</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground">시각</span>
+              <Input type="time" value={autoGenTime} onChange={(e) => setAutoGenTime(e.target.value)} className="w-28 h-8 text-sm" />
+            </div>
+          </div>
+          <Button size="sm" className="w-full" onClick={() => updateAutoGenSchedule.mutate({ enabled: autoGenEnabled, daysBefore: autoGenDaysBefore, time: autoGenTime })} disabled={updateAutoGenSchedule.isPending}>
+            저장
+          </Button>
+        </div>
+
         <div className="p-4 rounded-xl bg-card border border-destructive/30 space-y-2">
           <p className="text-sm font-medium text-destructive">기존 과거 분석글 일괄 삭제</p>
           <p className="text-xs text-muted-foreground">위에서 지정한 시작일 이전 경기에 이미 만들어진 분석글(봇 글)만 삭제합니다. 경기 목록과 상세데이터(라인업 등)는 그대로 남습니다.</p>
@@ -117,6 +176,27 @@ export default function AdminSettings() {
             disabled={wipeAll.isPending}
           >
             <Trash2 className="w-4 h-4 mr-1" />{wipeAll.isPending ? "초기화 중..." : "전체 분석글·픽 완전 삭제"}
+          </Button>
+        </div>
+
+        <div className="p-4 rounded-xl bg-destructive/10 border-2 border-destructive space-y-2 mt-3">
+          <p className="text-sm font-bold text-destructive">⚠️ 전체 데이터 완전 초기화 ("0"부터 다시 시작)</p>
+          <p className="text-xs text-muted-foreground">
+            경기 일정, 분석글, 픽, 상대전적, 라인업·부상자·배당률 등 상세데이터를 <b>전부</b> 삭제합니다. 등록된 종목·리그·분석가(봇) 설정은 그대로 유지됩니다.
+            여러 번의 테스트로 쌓인 데이터를 완전히 지우고 처음부터 다시 시작하실 때 사용하세요. <b>절대 되돌릴 수 없습니다.</b>
+          </p>
+          <Button
+            variant="outline" className="w-full text-destructive border-destructive font-bold"
+            onClick={() => {
+              if (confirm("정말로 모든 경기·분석글·픽·상세데이터를 삭제하고 완전히 처음부터 시작하시겠습니까?")) {
+                if (confirm("다시 한번 확인합니다 — 이 작업은 절대 되돌릴 수 없습니다. 정말 진행하시겠습니까?")) {
+                  resetAllMatchData.mutate();
+                }
+              }
+            }}
+            disabled={resetAllMatchData.isPending}
+          >
+            <Trash2 className="w-4 h-4 mr-1" />{resetAllMatchData.isPending ? "완전 초기화 중..." : "전체 데이터 완전 초기화"}
           </Button>
         </div>
       </div>
