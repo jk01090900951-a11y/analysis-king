@@ -7,6 +7,7 @@ interface Props {
   matchId: number;
   homeTeam: string;
   awayTeam: string;
+  sportName?: string | null;
 }
 
 interface GameRow {
@@ -59,7 +60,8 @@ function GameList({ teamName, games }: { teamName: string; games: GameRow[] }) {
   );
 }
 
-export default function MatchStatsTabs({ matchId, homeTeam, awayTeam }: Props) {
+export default function MatchStatsTabs({ matchId, homeTeam, awayTeam, sportName }: Props) {
+  const isFootball = sportName === "축구";
   const { data, isLoading } = trpc.analysis.matchStats.useQuery({ matchId });
   const [h2hFilter, setH2hFilter] = useState<"all" | "home" | "away">("all");
   const [visibleH2h, setVisibleH2h] = useState(5);
@@ -94,12 +96,12 @@ export default function MatchStatsTabs({ matchId, homeTeam, awayTeam }: Props) {
 
   return (
     <Tabs defaultValue="h2h" className="w-full">
-      <TabsList className="w-full grid grid-cols-6 mb-3">
+      <TabsList className={`w-full grid mb-3 ${isFootball ? "grid-cols-6" : "grid-cols-3"}`}>
         <TabsTrigger value="h2h" className="text-xs">H2H</TabsTrigger>
         <TabsTrigger value="standings" className="text-xs">순위표</TabsTrigger>
-        <TabsTrigger value="lineup" className="text-xs">라인업</TabsTrigger>
-        <TabsTrigger value="players" className="text-xs">선수기록</TabsTrigger>
-        <TabsTrigger value="team" className="text-xs">팀정보</TabsTrigger>
+        {isFootball && <TabsTrigger value="lineup" className="text-xs">라인업</TabsTrigger>}
+        {isFootball && <TabsTrigger value="players" className="text-xs">선수기록</TabsTrigger>}
+        {isFootball && <TabsTrigger value="team" className="text-xs">팀정보</TabsTrigger>}
         <TabsTrigger value="info" className="text-xs">경기정보</TabsTrigger>
       </TabsList>
 

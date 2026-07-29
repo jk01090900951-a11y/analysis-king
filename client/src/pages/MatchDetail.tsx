@@ -282,7 +282,7 @@ export default function MatchDetail() {
         </div>
 
         {/* 경기 상세 정보 탭 (상대전적/팀기록/라인업/부상자/배당률) */}
-        <MatchStatsTabs matchId={matchId} homeTeam={match.homeTeam} awayTeam={match.awayTeam} />
+        <MatchStatsTabs matchId={matchId} homeTeam={match.homeTeam} awayTeam={match.awayTeam} sportName={match.sportName} />
 
         {/* 분석가 픽 섹션 */}
         <div className="space-y-3">

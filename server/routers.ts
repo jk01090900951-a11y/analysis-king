@@ -260,14 +260,21 @@ export async function generateAnalysisForMatch(matchId: number) {
         ? `[최근 폼] ${match.homeTeam}: ${fmtForm(homeForm)}, ${match.awayTeam}: ${fmtForm(awayForm)} (단기 반등/슬럼프와 장기 실력을 구분해서 판단할 것 — 최근폼은 분석 시 최우선 고려 요소)`
         : "";
 
+      const scoreUnit = match.sportName === "야구" ? "점" : match.sportName === "농구" ? "점" : match.sportName === "배구" ? "세트" : "골";
+      const isBaseball = match.sportName === "야구";
+
       const strategyPrompts: Record<string, string> = {
-        head_to_head: "당신은 상대전적 분석가입니다. 다음 항목을 반드시 구체적 수치와 함께 다루세요: ① 최근 5회 맞대결의 스코어라인과 결과 패턴(홈팀 강세/원정팀 강세/균형), ② 반복되는 득실점 경향, ③ 이 매치업에서만 나타나는 상성(특정 팀에 유독 강하거나 약한 경향), ④ 위 데이터가 이번 경기에 시사하는 바를 명확한 근거와 함께 결론.",
-        recent_form: "당신은 최근 폼 분석가입니다. 다음 항목을 반드시 구체적으로 다루세요: ① 최근 5·10·20경기 승률 수치를 비교해 단기 반등인지 장기 하락세인지 판단, ② 최근 경기들의 득점/실점 추이(상승세/하락세), ③ 연속 무패 또는 연속 무승부 등 특이 흐름, ④ 이 폼이 이번 경기에서 유지될 근거 또는 반전될 위험 요소.",
-        data_driven: "당신은 데이터 기반 분석가입니다. 다음 항목을 반드시 수치와 함께 다루세요: ① 양 팀의 평균 득점·실점·슈팅 효율 비교, ② 수비 조직력 지표(클린시트 비율 등), ③ 세트피스(코너킥·프리킥) 득점 관여도, ④ 이 통계적 우위가 실제 스코어라인으로 이어질 확률적 근거.",
+        head_to_head: "당신은 상대전적 분석가입니다. 다음 항목을 반드시 구체적 수치와 함께 다루세요: ① 최근 5회 맞대결의 스코어라인과 결과 패턴(홈팀 강세/원정팀 강세/균형) — 아래 [실제 상대전적] 데이터의 날짜와 스코어를 최소 3개 이상 직접 인용, ② 반복되는 득실점 경향, ③ 이 매치업에서만 나타나는 상성(특정 팀에 유독 강하거나 약한 경향), ④ 위 데이터가 이번 경기에 시사하는 바를 명확한 근거와 함께 결론.",
+        recent_form: "당신은 최근 폼 분석가입니다. 다음 항목을 반드시 구체적으로 다루세요: ① [최근 폼] 데이터의 5·10·20경기 승률 수치를 그대로 인용해 비교하며 단기 반등인지 장기 하락세인지 판단, ② 최근 경기들의 득실점 추이(상승세/하락세), ③ 연속 무패 등 특이 흐름, ④ 이 폼이 이번 경기에서 유지될 근거 또는 반전될 위험 요소.",
+        data_driven: isBaseball
+          ? "당신은 데이터 기반 분석가입니다. 다음 항목을 [팀 시즌통계]·[홈/원정 스플릿] 데이터의 실제 수치로 다루세요: ① 양 팀의 최근 득점력·실점 억제력 비교, ② 홈/원정 성적 차이가 이번 경기에 주는 시사점, ③ 선발진·불펜 안정성에 대한 근거가 있다면 인용, ④ 이 통계적 우위가 실제 스코어로 이어질 확률적 근거."
+          : "당신은 데이터 기반 분석가입니다. 다음 항목을 반드시 [팀 시즌통계] 데이터의 실제 수치로 다루세요: ① 양 팀의 평균 득점·실점 비교(수치 그대로 인용), ② 수비 조직력 지표(클린시트 비율 등), ③ 세트피스(코너킥·프리킥) 득점 관여도, ④ 이 통계적 우위가 실제 스코어라인으로 이어질 확률적 근거.",
         fatigue_based: "당신은 컨디션·피로도 분석가입니다. 프롬프트에 주어진 [일정 밀집도] 데이터를 반드시 구체적 숫자(최근7일/14일 경기수, 동시출전대회 수, 백투백 여부)로 인용하며 다루세요: ① 두 팀의 일정 밀집도 수치 비교, ② 백투백 여부가 있다면 그로 인한 로테이션(주전 휴식) 가능성, ③ 주요 선수 결장 가능성이 경기력에 미칠 구체적 영향, ④ 피로도 열세인 쪽이 어떤 약점을 노출할지 예측.",
-        balanced: "당신은 수석 종합분석관입니다. 상대전적·최근폼·데이터·피로도 네 요소를 각각 최소 1문단씩 구체적 수치와 함께 다루고, 마지막 문단에서 어느 요소가 이번 경기의 승부처일지 종합 결론을 내리세요.",
+        balanced: "당신은 수석 종합분석관입니다. 상대전적·최근폼·데이터·피로도 네 요소를 각각 최소 1문단씩, 아래 제공된 각 데이터 항목의 실제 수치를 인용하며 다루고, 마지막 문단에서 어느 요소가 이번 경기의 승부처일지 종합 결론을 내리세요.",
       };
-      const lengthRequirement = "\n\n[분량/품질 요구사항] fullAnalysis는 반드시 최소 5개 문단(문단당 3문장 이상)으로 작성하세요. 뻔한 일반론(\"두 팀 모두 좋은 경기력을 보여주고 있습니다\" 같은 표현) 금지 — 반드시 위에서 요청한 구체적 수치·근거를 인용하며 서술하세요. 다른 분석가와 똑같은 내용이 아니라, 당신의 전문 분야 관점에서만 볼 수 있는 통찰을 담으세요.";
+      const providedDataLabels = [h2hNote, homeAwaySplitNote, teamStatsNote, injuriesNote, lineupNote, oddsNote, formNote, congestionNote]
+        .filter((n) => n && n.length > 0).length;
+      const lengthRequirement = `\n\n[분량/품질 요구사항] fullAnalysis는 반드시 최소 5개 문단(문단당 3문장 이상)으로 작성하세요. 뻔한 일반론("두 팀 모두 좋은 경기력을 보여주고 있습니다" 같은 표현) 절대 금지 — 아래 제공된 ${providedDataLabels}개의 실제 데이터 항목(대괄호로 표시된 [최근 폼], [실제 상대전적], [홈/원정 스플릿], [팀 시즌통계], [부상자 명단], [실제 라인업], [시장 배당률 참고], [일정 밀집도] 등) 중 최소 4개 이상을 본문에서 구체적 숫자와 함께 직접 언급하세요. 데이터가 없는 항목은 언급하지 말고, 있는 데이터만 최대한 깊게 파고드세요. 다른 분석가와 똑같은 내용이 아니라, 당신의 전문 분야 관점에서만 볼 수 있는 통찰을 담으세요.`;
 
       // 2026 신규: 분석글 생성 정책 — 관리자가 날짜를 지정했으면, 그 이전 경기는 상세데이터만 저장하고
       // AI 분석글(봇 글) 생성은 건너뜁니다 (테스트/과거 데이터에 비용 낭비 방지)
@@ -285,13 +292,13 @@ export async function generateAnalysisForMatch(matchId: number) {
 
         const strategyGuide = strategyPrompts[bot.strategy] ?? strategyPrompts.balanced!;
 
-        const prompt = `[종목: ${match.sportName ?? "스포츠"}] 이 경기는 ${match.sportName ?? "해당 종목"} 경기입니다. 반드시 이 종목에 맞는 용어만 사용하세요 (예: 야구 경기에 "포메이션"·"전반/후반" 같은 축구 용어를 쓰지 마세요. 종목에 맞게 이닝/타율/평균자책점 등 해당 종목 고유 용어를 쓰세요).\n\n${strategyGuide}${lengthRequirement}\n\n경기: ${matchInfo}\n리그: ${match.leagueName}\n언더오버 기준: ${match.overUnderLine}골\n${formNote}\n${congestionNote}\n${h2hNote}\n${homeAwaySplitNote}\n${teamStatsNote}\n${injuriesNote}\n${lineupNote}\n${oddsNote}\n데이터: ${JSON.stringify(apiData)}\n\n[중요] 아래 JSON 예시에 들어있는 숫자(60, 30, 10, 2.4, 72 등)는 그냥 "어떤 형태의 값이 필요한지" 보여주는 견본일 뿐, 실제 값이 아닙니다. 지금까지 여러 경기에서 이 숫자들을 그대로 복사해서 쓰는 문제가 있었습니다 — 반드시 위에 제공된 이 경기의 실제 데이터(최근폼·상대전적·시즌통계·배당률)를 근거로 이 경기만의 고유한 수치를 새로 계산하세요. 두 경기가 같은 수치를 가질 확률은 매우 낮습니다.\n\n다음 JSON 형식으로 반환하세요 (숫자 값은 예시이며 절대 그대로 쓰지 말고 이 경기 기준으로 재계산):\n{"summary":"핵심 요약 1-2문장","fullAnalysis":"상세 분석글 (최소 5문단, 문단당 3문장 이상, 구체적 수치 인용 필수, 위에 제공된 실제 라인업·부상자·배당률·홈원정스플릿·팀시즌통계 데이터를 반드시 근거로 활용, 이 종목에 맞는 용어만 사용)","keyStats":{"homeWinRate":60,"awayWinRate":30,"drawRate":10,"avgGoals":2.4,"notes":"이 수치를 도출한 핵심 근거 1문장"},"finalPick":"home","finalPickType":"win_draw_lose","confidence":72}`;
+        const prompt = `[종목: ${match.sportName ?? "스포츠"}] 이 경기는 ${match.sportName ?? "해당 종목"} 경기입니다. 반드시 이 종목에 맞는 용어만 사용하세요 (예: 야구 경기에 "포메이션"·"전반/후반" 같은 축구 용어를 쓰지 마세요. 종목에 맞게 이닝/타율/평균자책점 등 해당 종목 고유 용어를 쓰세요).\n\n[웹검색 활용 지침] 웹검색 도구를 사용해서 "${match.homeTeam} ${match.awayTeam} ${new Date(match.matchDate).toLocaleDateString("ko-KR")}" 관련 최신 뉴스(부상자 소식, 선발 라인업 발표, 최근 경기 결과, 팀 분위기 등)를 검색하고, 찾은 내용을 분석에 반영하세요. 단, 뉴스 원문을 그대로 베끼지 말고 반드시 당신의 표현으로 바꿔서 요약·인용하세요 (15단어 이상 원문 그대로 옮기지 말 것). 검색 결과가 없거나 관련 뉴스가 없으면 아래 제공된 데이터만으로 분석하세요.\n\n${strategyGuide}${lengthRequirement}\n\n경기: ${matchInfo}\n리그: ${match.leagueName}\n언더오버 기준: ${match.overUnderLine}${scoreUnit}\n${formNote}\n${congestionNote}\n${h2hNote}\n${homeAwaySplitNote}\n${teamStatsNote}\n${injuriesNote}\n${lineupNote}\n${oddsNote}\n데이터: ${JSON.stringify(apiData)}\n\n[중요1] 위에 나열된 대괄호([...]) 데이터 항목들은 전부 실제로 API에서 가져온 이 경기 고유의 데이터입니다. 절대 무시하거나 대충 언급만 하고 넘어가지 말고, 각 항목의 실제 숫자·이름·날짜를 본문에 구체적으로 인용하세요. 데이터가 비어있는 항목만 건너뛰세요.\n[중요2] 아래 JSON 예시에 들어있는 숫자(60, 30, 10, 2.4, 72 등)는 그냥 "어떤 형태의 값이 필요한지" 보여주는 견본일 뿐, 실제 값이 아닙니다. 반드시 위에 제공된 이 경기의 실제 데이터를 근거로 이 경기만의 고유한 수치를 새로 계산하세요.\n\n다음 JSON 형식으로 반환하세요 (숫자 값은 예시이며 절대 그대로 쓰지 말고 이 경기 기준으로 재계산):\n{"summary":"핵심 요약 1-2문장 (이 경기만의 구체적 포인트 언급)","fullAnalysis":"상세 분석글 (최소 5문단, 문단당 3문장 이상, 위에서 요구한 대로 실제 데이터 4개 이상 구체적 인용, 웹검색으로 찾은 최신 정보가 있다면 자연스럽게 녹여서 서술, 이 종목에 맞는 용어만 사용)","keyStats":{"homeWinRate":60,"awayWinRate":30,"drawRate":10,"avgGoals":2.4,"notes":"이 수치를 도출한 핵심 근거 1문장"},"finalPick":"home","finalPickType":"win_draw_lose","confidence":72}`;
 
         // 2026: LLM 호출 실패 시 더 이상 가짜 기본문구로 채워 저장하지 않습니다.
         // 실패한 봇은 그냥 건너뛰고(DB에 저장 안 함) → 다음에 "분석글 생성"을 다시 누르면
         // (예: Claude API 키를 뒤늦게 설정한 뒤) 그 봇만 정상적으로 재시도됩니다.
         try {
-          const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "analysis", strict: false, schema: { type: "object", properties: { summary: { type: "string" }, fullAnalysis: { type: "string" }, keyStats: { type: "object" }, finalPick: { type: "string" }, finalPickType: { type: "string" }, confidence: { type: "number" } }, required: ["summary", "fullAnalysis", "finalPick", "finalPickType", "confidence"], additionalProperties: true } } } });
+          const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], enableWebSearch: true, response_format: { type: "json_schema", json_schema: { name: "analysis", strict: false, schema: { type: "object", properties: { summary: { type: "string" }, fullAnalysis: { type: "string" }, keyStats: { type: "object" }, finalPick: { type: "string" }, finalPickType: { type: "string" }, confidence: { type: "number" } }, required: ["summary", "fullAnalysis", "finalPick", "finalPickType", "confidence"], additionalProperties: true } } } });
           const msgContent = response.choices?.[0]?.message?.content as string | undefined;
           if (!msgContent) throw new Error("LLM 응답이 비어있습니다.");
           const parsed = JSON.parse(msgContent);
@@ -437,6 +444,7 @@ async function generatePicksForMatch(matchId: number) {
 
       const matchInfo = `${match.homeTeam} vs ${match.awayTeam} (${match.leagueName}, ${new Date(match.matchDate).toLocaleDateString('ko-KR')})`;
       const apiData = match.apiData as any ?? {};
+      const scoreUnitForPicks = match.sportName === "야구" ? "점" : match.sportName === "농구" ? "점" : match.sportName === "배구" ? "세트" : "골";
 
       for (const bot of bots) {
         // 이미 픽이 있으면 스킵
@@ -452,12 +460,12 @@ async function generatePicksForMatch(matchId: number) {
           balanced: "상대전적, 최근성적, 홈/원정, 피로도를 균형있게 분석",
         };
 
-        const prompt = `당신은 스포츠 AI 예측봇입니다. 전략: ${strategyDesc[bot.strategy] ?? bot.strategy}
+        const prompt = `당신은 스포츠 AI 예측봇입니다. 이 경기는 ${match.sportName ?? "스포츠"} 경기입니다. 전략: ${strategyDesc[bot.strategy] ?? bot.strategy}
 경기: ${matchInfo}
 가중치: ${JSON.stringify(weights)}
 데이터: ${JSON.stringify(apiData)}
 
-위 경기에 대해 승무패(home/draw/away)와 언더오버(over/under, 기준: ${match.overUnderLine}골)를 예측하고, 각각의 신뢰도(0-100)와 간단한 근거를 JSON으로 반환하세요.
+위 경기에 대해 승무패(home/draw/away)와 언더오버(over/under, 기준: ${match.overUnderLine}${scoreUnitForPicks})를 예측하고, 각각의 신뢰도(0-100)와 간단한 근거를 JSON으로 반환하세요.
 형식: {"wdlPick":"home","wdlConfidence":72,"ouPick":"over","ouConfidence":65,"reasoning":"근거 2-3문장"}`;
 
         let wdlPick: "home" | "draw" | "away" = "home";

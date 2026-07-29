@@ -148,14 +148,22 @@ export default function AdminSports() {
     }
   };
 
-  // 2026 신규: [빅리그] — 인기 축구 리그가 있는 나라들을 미리 정해두고 한 번에 검색 (실제 빅리그 이름은 목록에서 직접 체크)
-  const BIG_LEAGUE_COUNTRIES = ["Germany", "Spain", "Italy", "England", "France", "Korea-Republic"];
+  // 2026 수정: [빅리그] 국가 목록이 축구 기준으로 고정되어 있어서, 야구를 선택해도 독일·스페인 등으로 검색되던 버그
+  // → 종목별로 실제 "인기 리그가 있는 나라"가 다르므로 분리 (야구=미국/일본/한국/대만, 축구=유럽+한국)
+  const BIG_LEAGUE_COUNTRIES_BY_SPORT: Record<string, string[]> = {
+    "축구": ["Germany", "Spain", "Italy", "England", "France", "Korea-Republic"],
+    "야구": ["USA", "Japan", "Korea-Republic", "Chinese-Taipei"],
+    "농구": ["USA", "Korea-Republic", "China", "Spain"],
+    "배구": ["Korea-Republic", "Japan", "Italy", "Brazil"],
+    "아이스하키": ["Canada", "USA", "Russia", "Sweden"],
+  };
   const searchBigLeagues = async () => {
     if (!importSport) return;
+    const countries = BIG_LEAGUE_COUNTRIES_BY_SPORT[importSport.name] ?? BIG_LEAGUE_COUNTRIES_BY_SPORT["축구"]!;
     setSearchingLeagues(true);
     try {
       const results = await Promise.all(
-        BIG_LEAGUE_COUNTRIES.map((country) => utils.client.sport.searchLeagues.query({ sportName: importSport.name, country }))
+        countries.map((country) => utils.client.sport.searchLeagues.query({ sportName: importSport.name, country }))
       );
       setFoundLeagues(results.flat());
     } catch (e: any) {
