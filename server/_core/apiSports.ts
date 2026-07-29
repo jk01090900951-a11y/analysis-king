@@ -369,10 +369,11 @@ export async function fetchInjuries(fixtureId: string): Promise<{ team: string; 
 }
 
 // 경기별 실제(또는 예상) 라인업/포메이션
-export async function fetchLineups(fixtureId: string): Promise<{ team: string; formation: string | null; startXI: { name: string; position: string; number: number }[] }[]> {
+export async function fetchLineups(fixtureId: string): Promise<{ teamId: number; team: string; formation: string | null; startXI: { name: string; position: string; number: number }[] }[]> {
   const url = `${FOOTBALL_BASE}/fixtures/lineups?fixture=${fixtureId}`;
   const data = await apiSportsGet<{ response: any[] }>(url);
   return (data.response ?? []).map((l: any) => ({
+    teamId: l.team?.id ?? 0,
     team: l.team?.name ?? "",
     formation: l.formation ?? null,
     startXI: (l.startXI ?? []).map((p: any) => ({ name: p.player?.name ?? "", position: p.player?.pos ?? "", number: p.player?.number ?? 0 })),

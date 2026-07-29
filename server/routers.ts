@@ -99,8 +99,12 @@ export async function ensureMatchDetailData(matchId: number) {
   try {
     if (match.externalId && match.sportName?.includes("축구") && !match.homeLineup) {
       const lineups = await fetchLineups(match.externalId);
-      const homeL = lineups.find((l) => l.team === match.homeTeam);
-      const awayL = lineups.find((l) => l.team === match.awayTeam);
+      const apiTeamsForLineup = (apiData as any)?.teams;
+      const homeTeamIdForLineup = apiTeamsForLineup?.home?.id;
+      const awayTeamIdForLineup = apiTeamsForLineup?.away?.id;
+      // 2026 수정: 팀 이름 문자열 비교는 API 표기 차이로 매칭 실패할 수 있어, 팀ID 우선 매칭 + 이름매칭은 백업으로
+      const homeL = lineups.find((l) => (homeTeamIdForLineup ? l.teamId === homeTeamIdForLineup : l.team === match.homeTeam));
+      const awayL = lineups.find((l) => (awayTeamIdForLineup ? l.teamId === awayTeamIdForLineup : l.team === match.awayTeam));
       if (homeL || awayL) {
         await db.update(matches).set({
           homeFormation: homeL?.formation ?? null,
