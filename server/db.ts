@@ -660,10 +660,14 @@ export async function backfillLeagueSeasons(leagueId: number, seasons: number[])
 export async function getStandings(leagueId: number, season: number) {
   const db = await getDb();
   if (!db) return null;
-  const leagueRows = await db.select().from(leagues).where(eq(leagues.id, leagueId)).limit(1);
+  const leagueRows = await db.select({ id: leagues.id, externalLeagueId: leagues.externalLeagueId, standingsCache: leagues.standingsCache, standingsUpdatedAt: leagues.standingsUpdatedAt, sportName: sports.name })
+    .from(leagues).leftJoin(sports, eq(leagues.sportId, sports.id)).where(eq(leagues.id, leagueId)).limit(1);
   const league = leagueRows[0];
   if (!league) return null;
   if (!league.externalLeagueId) return { standings: null, error: "이 리그에 API-Sports 리그ID가 없어 순위표를 가져올 수 없습니다." };
+  // 2026 수정: 순위표 조회가 종목 구분 없이 무조건 축구 API를 호출하던 버그 — 야구 리그ID를 축구쪽에 잘못 조회해서
+  // 엉뚱한(우연히 ID가 겹치는) 축구 대회 데이터가 나오는 심각한 문제였음. 축구만 지원하도록 명확히 제한.
+  if (league.sportName !== "축구") return { standings: null, error: "순위표는 현재 축구만 지원합니다 (야구 등 다른 종목은 준비 중입니다)." };
 
   const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
   if (league.standingsCache && league.standingsUpdatedAt && league.standingsUpdatedAt > sixHoursAgo) {

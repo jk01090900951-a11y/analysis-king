@@ -242,7 +242,7 @@ export async function generateAnalysisForMatch(matchId: number) {
         : "";
 
       const strategyPrompts: Record<string, string> = {
-        head_to_head: "당신은 상대전적 분석가입니다. 다음 항목을 반드시 구체적 수치와 함께 다루세요: ① 최근 5회 맞대결의 스코어라인과 결과 패턴(홈팀 강세/원정팀 강세/균형), ② 특정 시간대(전반/후반)에 반복되는 득실점 경향, ③ 이 매치업에서만 나타나는 전술적 상성(예: 특정 포메이션에 약한 팀), ④ 위 데이터가 이번 경기에 시사하는 바를 명확한 근거와 함께 결론.",
+        head_to_head: "당신은 상대전적 분석가입니다. 다음 항목을 반드시 구체적 수치와 함께 다루세요: ① 최근 5회 맞대결의 스코어라인과 결과 패턴(홈팀 강세/원정팀 강세/균형), ② 반복되는 득실점 경향, ③ 이 매치업에서만 나타나는 상성(특정 팀에 유독 강하거나 약한 경향), ④ 위 데이터가 이번 경기에 시사하는 바를 명확한 근거와 함께 결론.",
         recent_form: "당신은 최근 폼 분석가입니다. 다음 항목을 반드시 구체적으로 다루세요: ① 최근 5·10·20경기 승률 수치를 비교해 단기 반등인지 장기 하락세인지 판단, ② 최근 경기들의 득점/실점 추이(상승세/하락세), ③ 연속 무패 또는 연속 무승부 등 특이 흐름, ④ 이 폼이 이번 경기에서 유지될 근거 또는 반전될 위험 요소.",
         data_driven: "당신은 데이터 기반 분석가입니다. 다음 항목을 반드시 수치와 함께 다루세요: ① 양 팀의 평균 득점·실점·슈팅 효율 비교, ② 수비 조직력 지표(클린시트 비율 등), ③ 세트피스(코너킥·프리킥) 득점 관여도, ④ 이 통계적 우위가 실제 스코어라인으로 이어질 확률적 근거.",
         fatigue_based: "당신은 컨디션·피로도 분석가입니다. 프롬프트에 주어진 [일정 밀집도] 데이터를 반드시 구체적 숫자(최근7일/14일 경기수, 동시출전대회 수, 백투백 여부)로 인용하며 다루세요: ① 두 팀의 일정 밀집도 수치 비교, ② 백투백 여부가 있다면 그로 인한 로테이션(주전 휴식) 가능성, ③ 주요 선수 결장 가능성이 경기력에 미칠 구체적 영향, ④ 피로도 열세인 쪽이 어떤 약점을 노출할지 예측.",
@@ -266,7 +266,7 @@ export async function generateAnalysisForMatch(matchId: number) {
 
         const strategyGuide = strategyPrompts[bot.strategy] ?? strategyPrompts.balanced!;
 
-        const prompt = `${strategyGuide}${lengthRequirement}\n\n경기: ${matchInfo}\n리그: ${match.leagueName}\n언더오버 기준: ${match.overUnderLine}골\n${formNote}\n${congestionNote}\n${h2hNote}\n${homeAwaySplitNote}\n${teamStatsNote}\n${injuriesNote}\n${lineupNote}\n${oddsNote}\n데이터: ${JSON.stringify(apiData)}\n\n[중요] 아래 JSON 예시에 들어있는 숫자(60, 30, 10, 2.4, 72 등)는 그냥 "어떤 형태의 값이 필요한지" 보여주는 견본일 뿐, 실제 값이 아닙니다. 지금까지 여러 경기에서 이 숫자들을 그대로 복사해서 쓰는 문제가 있었습니다 — 반드시 위에 제공된 이 경기의 실제 데이터(최근폼·상대전적·시즌통계·배당률)를 근거로 이 경기만의 고유한 수치를 새로 계산하세요. 두 경기가 같은 수치를 가질 확률은 매우 낮습니다.\n\n다음 JSON 형식으로 반환하세요 (숫자 값은 예시이며 절대 그대로 쓰지 말고 이 경기 기준으로 재계산):\n{"summary":"핵심 요약 1-2문장","fullAnalysis":"상세 분석글 (최소 5문단, 문단당 3문장 이상, 구체적 수치 인용 필수, 위에 제공된 실제 라인업·부상자·배당률·홈원정스플릿·팀시즌통계 데이터를 반드시 근거로 활용)","keyStats":{"homeWinRate":60,"awayWinRate":30,"drawRate":10,"avgGoals":2.4,"notes":"이 수치를 도출한 핵심 근거 1문장"},"finalPick":"home","finalPickType":"win_draw_lose","confidence":72}`;
+        const prompt = `[종목: ${match.sportName ?? "스포츠"}] 이 경기는 ${match.sportName ?? "해당 종목"} 경기입니다. 반드시 이 종목에 맞는 용어만 사용하세요 (예: 야구 경기에 "포메이션"·"전반/후반" 같은 축구 용어를 쓰지 마세요. 종목에 맞게 이닝/타율/평균자책점 등 해당 종목 고유 용어를 쓰세요).\n\n${strategyGuide}${lengthRequirement}\n\n경기: ${matchInfo}\n리그: ${match.leagueName}\n언더오버 기준: ${match.overUnderLine}골\n${formNote}\n${congestionNote}\n${h2hNote}\n${homeAwaySplitNote}\n${teamStatsNote}\n${injuriesNote}\n${lineupNote}\n${oddsNote}\n데이터: ${JSON.stringify(apiData)}\n\n[중요] 아래 JSON 예시에 들어있는 숫자(60, 30, 10, 2.4, 72 등)는 그냥 "어떤 형태의 값이 필요한지" 보여주는 견본일 뿐, 실제 값이 아닙니다. 지금까지 여러 경기에서 이 숫자들을 그대로 복사해서 쓰는 문제가 있었습니다 — 반드시 위에 제공된 이 경기의 실제 데이터(최근폼·상대전적·시즌통계·배당률)를 근거로 이 경기만의 고유한 수치를 새로 계산하세요. 두 경기가 같은 수치를 가질 확률은 매우 낮습니다.\n\n다음 JSON 형식으로 반환하세요 (숫자 값은 예시이며 절대 그대로 쓰지 말고 이 경기 기준으로 재계산):\n{"summary":"핵심 요약 1-2문장","fullAnalysis":"상세 분석글 (최소 5문단, 문단당 3문장 이상, 구체적 수치 인용 필수, 위에 제공된 실제 라인업·부상자·배당률·홈원정스플릿·팀시즌통계 데이터를 반드시 근거로 활용, 이 종목에 맞는 용어만 사용)","keyStats":{"homeWinRate":60,"awayWinRate":30,"drawRate":10,"avgGoals":2.4,"notes":"이 수치를 도출한 핵심 근거 1문장"},"finalPick":"home","finalPickType":"win_draw_lose","confidence":72}`;
 
         // 2026: LLM 호출 실패 시 더 이상 가짜 기본문구로 채워 저장하지 않습니다.
         // 실패한 봇은 그냥 건너뛰고(DB에 저장 안 함) → 다음에 "분석글 생성"을 다시 누르면
@@ -1104,6 +1104,48 @@ export const appRouter = router({
         deletedAnalyses: Number(analysisCount?.count ?? 0),
         deletedPicks: Number(pickCount?.count ?? 0),
         deletedH2h: Number(h2hCount?.count ?? 0),
+      };
+    }),
+    // 2026 신규: 등록된 리그까지 전부 초기화 (경기·분석글·픽·상대전적도 당연히 같이 삭제됨) — 종목 카테고리(축구/야구 등)와 봇 설정은 유지
+    resetAllLeaguesAndMatches: adminProcedure.mutation(async () => {
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const [leagueCount] = await db.select({ count: sql<number>`count(*)` }).from(leagues);
+      const [matchCount] = await db.select({ count: sql<number>`count(*)` }).from(matches);
+      const [analysisCount] = await db.select({ count: sql<number>`count(*)` }).from(matchAnalysis);
+      const [pickCount] = await db.select({ count: sql<number>`count(*)` }).from(botPicks);
+      const [h2hCount] = await db.select({ count: sql<number>`count(*)` }).from(headToHead);
+      await db.delete(matchAnalysis);
+      await db.delete(botPicks);
+      await db.delete(headToHead);
+      await db.delete(matches);
+      await db.delete(leagues);
+      return {
+        deletedLeagues: Number(leagueCount?.count ?? 0),
+        deletedMatches: Number(matchCount?.count ?? 0),
+        deletedAnalyses: Number(analysisCount?.count ?? 0),
+        deletedPicks: Number(pickCount?.count ?? 0),
+        deletedH2h: Number(h2hCount?.count ?? 0),
+      };
+    }),
+    // 2026 신규: 등록된 리그 자체까지 전부 삭제 (경기/분석글/픽/상대전적도 당연히 같이 삭제) — 종목(축구/야구 등)과 분석가 설정은 유지
+    resetAllLeagues: adminProcedure.mutation(async () => {
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const [leagueCount] = await db.select({ count: sql<number>`count(*)` }).from(leagues);
+      const [matchCount2] = await db.select({ count: sql<number>`count(*)` }).from(matches);
+      const [analysisCount2] = await db.select({ count: sql<number>`count(*)` }).from(matchAnalysis);
+      const [pickCount2] = await db.select({ count: sql<number>`count(*)` }).from(botPicks);
+      const [h2hCount2] = await db.select({ count: sql<number>`count(*)` }).from(headToHead);
+      await db.delete(matchAnalysis);
+      await db.delete(botPicks);
+      await db.delete(headToHead);
+      await db.delete(matches);
+      await db.delete(leagues);
+      return {
+        deletedLeagues: Number(leagueCount?.count ?? 0),
+        deletedMatches: Number(matchCount2?.count ?? 0),
+        deletedAnalyses: Number(analysisCount2?.count ?? 0),
+        deletedPicks: Number(pickCount2?.count ?? 0),
+        deletedH2h: Number(h2hCount2?.count ?? 0),
       };
     }),
     // 2026 신규: 경기 하나만 분석글·픽 삭제 (경기 자체와 상세데이터는 유지) — 삭제 후 다시 "분석글 생성" 누르면 깨끗하게 재생성됨

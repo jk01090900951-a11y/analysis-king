@@ -95,6 +95,13 @@ export default function AdminSports() {
     },
     onError: (e) => toast.error(e.message),
   });
+  const resetAllLeagues = trpc.admin.resetAllLeaguesAndMatches.useMutation({
+    onSuccess: (r: any) => {
+      toast.success(`전체 초기화 완료 — 리그 ${r.deletedLeagues}건, 경기 ${r.deletedMatches}건, 분석글 ${r.deletedAnalyses}건, 픽 ${r.deletedPicks}건 삭제됨`, { duration: 10000 });
+      utils.sport.allLeagues.invalidate();
+    },
+    onError: (e) => toast.error(e.message),
+  });
   const sportNameOf = (sportId: number) => (sports ?? []).find((s: any) => s.id === sportId)?.name;
   const syncLeague = (l: any) => {
     const sn = sportNameOf(l.sportId);
@@ -221,6 +228,19 @@ export default function AdminSports() {
           </Select>
           <Button size="sm" onClick={() => setImportDialog(true)}><Download className="w-4 h-4 mr-1" />리그 가져오기</Button>
           <Button size="sm" variant="outline" onClick={() => setLeagueDialog(true)}><Plus className="w-4 h-4 mr-1" />리그 직접 추가</Button>
+          <Button
+            size="sm" variant="outline" className="text-destructive border-destructive/50 ml-auto"
+            onClick={() => {
+              if (confirm("등록된 리그를 전부 삭제합니다 (경기·분석글·픽·상대전적도 함께 삭제됩니다). 종목 카테고리와 분석가 설정은 유지됩니다. 계속할까요?")) {
+                if (confirm("다시 한번 확인합니다 — 되돌릴 수 없습니다. 정말 진행하시겠습니까?")) {
+                  resetAllLeagues.mutate();
+                }
+              }
+            }}
+            disabled={resetAllLeagues.isPending}
+          >
+            <Trash2 className="w-4 h-4 mr-1" />{resetAllLeagues.isPending ? "초기화 중..." : "전체 리그 초기화"}
+          </Button>
         </div>
       </div>
 
